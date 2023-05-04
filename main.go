@@ -139,8 +139,8 @@ type LeaderEvent struct {
 	Key      string
 }
 
-// LeaderElectionLoop makes the node participate in leader elections. The channel is sent true when the node becomes the leader, and false when it becomes a follower.
-func LeaderElectionLoop(ctx context.Context, db *Database, node string, leaderChan chan<- LeaderEvent) {
+// GenerateLeaderEvents makes the node participate in leader elections. The channel is sent true when the node becomes the leader, and false when it becomes a follower.
+func GenerateLeaderEvents(ctx context.Context, db *Database, node string, leaderChan chan<- LeaderEvent) {
 	leaderChan <- LeaderEvent{IsLeader: false}
 	session, err := concurrency.NewSession(db.Client, concurrency.WithTTL(1))
 	if err != nil {
@@ -212,7 +212,7 @@ func main() {
 	leaderChan := make(chan LeaderEvent)
 	eventChan := make(chan VNIEvent, len(vnis))
 
-	go LeaderElectionLoop(ctx, db, node, leaderChan)
+	go GenerateLeaderEvents(ctx, db, node, leaderChan)
 	go GenerateWatchEvents(eventChan)
 	go ProcessEvents(node, eventChan, leaderChan, frr, db, vnis)
 
