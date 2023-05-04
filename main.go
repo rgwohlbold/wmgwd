@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	v3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"os"
 	"strconv"
@@ -13,14 +13,14 @@ import (
 	"time"
 )
 
-type Event struct {
+type VNIEvent struct {
 	State VNIState
 	VNI   int
 }
 
 const MigrationTimeout = 30 * time.Second
 
-func ProcessEvent(node string, leader LeaderElectionResult, event Event, frr *FRRClient, db *Database) error {
+func ProcessVNIEvent(node string, leader LeaderEvent, event VNIEvent, frr *FRRClient, db *Database) error {
 	if event.State.Type == Unassigned {
 		if leader.IsLeader {
 			return db.SetFailoverDecided(event.VNI, event.State.Current, node)
@@ -57,22 +57,16 @@ func ProcessEvent(node string, leader LeaderElectionResult, event Event, frr *FR
 			}
 			return db.SetIdle(event.VNI, event.State.Next)
 		}
-	} else if event.State.Type == Idle {
-		/* On restart, we have previously withdrawn all routes.
-		   We now may need to re-advertise the VNIs that are assigned to us. */
-		if node == event.State.Current {
-			return frr.Advertise(event.VNI)
-		}
 	}
 	return nil
 }
 
-func ProcessEvents(node string, eventChan chan Event, leaderChan <-chan LeaderElectionResult, frr *FRRClient, db *Database, vnis []int) {
+func ProcessEvents(node string, eventChan chan VNIEvent, leaderChan <-chan LeaderEvent, frr *FRRClient, db *Database, vnis []int) {
 	leader := <-leaderChan
 	for {
 		select {
 		case event := <-eventChan:
-			err := ProcessEvent(node, leader, event, frr, db)
+			err := ProcessVNIEvent(node, leader, event, frr, db)
 			if err != nil {
 				log.Fatal().Err(err).Msg("failed to process event")
 			}
@@ -82,37 +76,37 @@ func ProcessEvents(node string, eventChan chan Event, leaderChan <-chan LeaderEl
 	}
 }
 
-func GenerateLeaderChangeEvents(ch chan<- Event, db *Database, vnis []int) {
+func GenerateLeaderChangeEvents(ch chan<- VNIEvent, db *Database, vnis []int) {
 	for _, vni := range vnis {
 		state, err := db.GetState(vni)
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to get state")
 		}
 		if state.Type == Unassigned {
-			ch <- Event{VNI: vni, State: VNIState{Type: Unassigned, Current: state.Current}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: Unassigned, Current: state.Current}}
 		} else if state.Type == MigrationDecided {
-			ch <- Event{VNI: vni, State: VNIState{Type: MigrationDecided, Current: state.Current, Next: state.Next}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: MigrationDecided, Current: state.Current, Next: state.Next}}
 		} else if state.Type == MigrationInterfacesCreated {
-			ch <- Event{VNI: vni, State: VNIState{Type: MigrationInterfacesCreated, Current: state.Current, Next: state.Next}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: MigrationInterfacesCreated, Current: state.Current, Next: state.Next}}
 		} else if state.Type == MigrationTimerStarted {
-			ch <- Event{VNI: vni, State: VNIState{Type: MigrationTimerStarted, Current: state.Current, Next: state.Next}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: MigrationTimerStarted, Current: state.Current, Next: state.Next}}
 		} else if state.Type == FailoverDecided {
-			ch <- Event{VNI: vni, State: VNIState{Type: FailoverDecided, Current: state.Current, Next: state.Next}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: FailoverDecided, Current: state.Current, Next: state.Next}}
 		} else if state.Type == Idle {
-			ch <- Event{VNI: vni, State: VNIState{Type: Idle, Current: state.Current}}
+			ch <- VNIEvent{VNI: vni, State: VNIState{Type: Idle, Current: state.Current}}
 		}
 	}
 
 }
 
-func GenerateWatchEvents(ch chan<- Event) {
+func GenerateWatchEvents(ch chan<- VNIEvent) {
 	db, err := NewDatabase()
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to connect to database")
 	}
 	defer db.Close()
 
-	watchChan := db.Client.Watch(context.Background(), EtcdVNIPrefix, clientv3.WithPrefix())
+	watchChan := db.Client.Watch(context.Background(), EtcdVNIPrefix, v3.WithPrefix())
 	for {
 		e := <-watchChan
 		for _, ev := range e.Events {
@@ -123,26 +117,31 @@ func GenerateWatchEvents(ch chan<- Event) {
 				continue
 			}
 			state := VNIState{}
-			err = json.Unmarshal(ev.Kv.Value, &state)
-			if err != nil {
-				log.Error().Str("key", string(ev.Kv.Key)).Str("value", string(ev.Kv.Value)).Err(err).Msg("failed to parse state")
-				continue
+
+			if ev.Type == v3.EventTypeDelete {
+				state.Type = Unassigned
+			} else {
+				err = json.Unmarshal(ev.Kv.Value, &state)
+				if err != nil {
+					log.Error().Str("key", string(ev.Kv.Key)).Str("value", string(ev.Kv.Value)).Err(err).Msg("failed to parse state")
+					continue
+				}
 			}
 
-			ch <- Event{VNI: vni, State: state}
+			ch <- VNIEvent{VNI: vni, State: state}
 		}
 	}
 
 }
 
-type LeaderElectionResult struct {
+type LeaderEvent struct {
 	IsLeader bool
 	Key      string
 }
 
 // LeaderElectionLoop makes the node participate in leader elections. The channel is sent true when the node becomes the leader, and false when it becomes a follower.
-func LeaderElectionLoop(ctx context.Context, db *Database, node string, leaderChan chan<- LeaderElectionResult) {
-	leaderChan <- LeaderElectionResult{IsLeader: false}
+func LeaderElectionLoop(ctx context.Context, db *Database, node string, leaderChan chan<- LeaderEvent) {
+	leaderChan <- LeaderEvent{IsLeader: false}
 	session, err := concurrency.NewSession(db.Client, concurrency.WithTTL(1))
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader election: failed to create session")
@@ -161,7 +160,7 @@ func LeaderElectionLoop(ctx context.Context, db *Database, node string, leaderCh
 			log.Fatal().Err(err).Msg("leader election: campaign failed")
 		}
 		log.Info().Str("key", election.Key()).Msg("leader election: got elected")
-		leaderChan <- LeaderElectionResult{IsLeader: true, Key: election.Key()}
+		leaderChan <- LeaderEvent{IsLeader: true, Key: election.Key()}
 		observeChan := election.Observe(ctx)
 		for {
 			select {
@@ -170,7 +169,7 @@ func LeaderElectionLoop(ctx context.Context, db *Database, node string, leaderCh
 					continue
 				}
 				log.Info().Msg("leader election: lost election")
-				leaderChan <- LeaderElectionResult{IsLeader: false, Key: election.Key()}
+				leaderChan <- LeaderEvent{IsLeader: false, Key: election.Key()}
 			case <-ctx.Done():
 				err = election.Resign(ctx)
 				if err != nil {
@@ -210,8 +209,8 @@ func main() {
 	defer db.Close()
 
 	log.Info().Msg("starting leader election loop")
-	leaderChan := make(chan LeaderElectionResult)
-	eventChan := make(chan Event, len(vnis))
+	leaderChan := make(chan LeaderEvent)
+	eventChan := make(chan VNIEvent, len(vnis))
 
 	go LeaderElectionLoop(ctx, db, node, leaderChan)
 	go GenerateWatchEvents(eventChan)

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/rs/zerolog/log"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	v3 "go.etcd.io/etcd/client/v3"
 	"strconv"
 	"time"
 )
@@ -16,8 +16,12 @@ const EtcdLeaseInterval = 200 * time.Millisecond
 
 const EtcdVNIPrefix = "/wmgwd/vni/"
 
+const EtcdNodePrefix = "/wmgwd/node/"
+
 type Database struct {
-	*clientv3.Client
+	*v3.Client
+	lease           v3.LeaseID
+	cancelKeepalive context.CancelFunc
 }
 
 type VNIStateType int
@@ -38,55 +42,48 @@ type VNIState struct {
 	Next    string       `json:"next"`
 }
 
+func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
+	defer cancel()
+
+	lease, err := client.Grant(ctx, EtcdLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+
+	return lease, nil
+}
+
 func NewDatabase() (*Database, error) {
-	client, err := clientv3.New(clientv3.Config{
+	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	lease, err := createLease(ctx, client)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
-	return &Database{client}, nil
+	respChan, err := client.KeepAlive(ctx, lease.ID)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	go func() {
+		for range respChan {
+			// wait for channel to close
+		}
+	}()
+
+	return &Database{client, lease.ID, cancel}, nil
 }
 
 func (db *Database) Close() error {
 	return db.Client.Close()
-}
-
-func (db *Database) Events() {
-	c := db.Client.Watch(context.Background(), "", clientv3.WithPrefix())
-	for {
-		w := <-c
-		events := w.Events
-		for _, e := range events {
-			log.Info().Str("key", string(e.Kv.Key)).Str("value", string(e.Kv.Value)).Msg("event")
-		}
-	}
-}
-
-func (db *Database) ExtendLeaseOnce(ctx context.Context, node string) error {
-	lease, err := db.Client.Grant(ctx, EtcdLeaseTTL)
-	if err != nil {
-		return err
-	}
-	_, err = db.Client.Put(ctx, "/wmgwd/nodes/"+node, "", clientv3.WithLease(lease.ID))
-	if err != nil {
-		return err
-	}
-	log.Debug().Msg("extended lease")
-	return err
-}
-
-func (db *Database) ExtendLeaseForever(node string) {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-		err := db.ExtendLeaseOnce(ctx, node)
-		cancel()
-		if err != nil {
-			log.Error().Err(err).Msg("failed to extend lease")
-		}
-		time.Sleep(EtcdLeaseInterval)
-	}
 }
 
 func (db *Database) Leader() (string, error) {
@@ -114,7 +111,7 @@ func (db *Database) setVNIState(vni int, state VNIState) error {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	_, err = db.Client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni), string(serialized))
+	_, err = db.Client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni), string(serialized), v3.WithLease(db.lease))
 	defer cancel()
 	return err
 }
@@ -126,7 +123,8 @@ func (db *Database) StartMigrationTimer(vni int) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni)+"/timer", "", clientv3.WithLease(resp.ID))
+	// TODO: think about the necessity of the database
+	_, err = db.Client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni)+"/timer", "", v3.WithLease(resp.ID))
 	return err
 }
 
