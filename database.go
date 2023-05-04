@@ -30,7 +30,7 @@ const (
 	Idle
 	MigrationDecided
 	MigrationInterfacesCreated
-	MigrationTimerStarted
+	MigrationCostReduced
 	FailoverDecided
 )
 
@@ -120,8 +120,8 @@ func stateTypeToString(state VNIStateType) string {
 		return "migration-decided"
 	case MigrationInterfacesCreated:
 		return "migration-interfaces-created"
-	case MigrationTimerStarted:
-		return "migration-timer-started"
+	case MigrationCostReduced:
+		return "migration-cost-reduced"
 	case FailoverDecided:
 		return "failover-decided"
 	default:
@@ -176,9 +176,9 @@ func (db *Database) SetMigrationInterfacesCreated(vni int, current string, next 
 
 }
 
-func (db *Database) SetMigrationTimerStarted(vni int, current string, next string) error {
+func (db *Database) SetMigrationCostReduced(vni int, current string, next string) error {
 	return db.setVNIState(vni, VNIState{
-		Type:    MigrationTimerStarted,
+		Type:    MigrationCostReduced,
 		Current: current,
 		Next:    next,
 	})

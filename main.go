@@ -36,13 +36,9 @@ func ProcessEvents(node string, vniChan chan VNIEvent, leaderChan <-chan LeaderE
 				}
 			}
 		case timerEvent := <-timerChan:
-			state, err := db.GetState(timerEvent.VNI)
-			if err != nil {
-				log.Fatal().Err(err).Msg("failed to get state")
-			}
-			err = db.setVNIState(timerEvent.VNI, VNIState{
+			err := db.setVNIState(timerEvent.VNI, VNIState{
 				Type:    Idle,
-				Current: state.Next,
+				Current: node,
 				Next:    "",
 			})
 			if err != nil {

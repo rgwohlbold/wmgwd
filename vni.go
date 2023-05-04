@@ -73,8 +73,11 @@ func ProcessVNIEvent(node string, leader LeaderEvent, event VNIEvent, frr *FRRCl
 			if err != nil {
 				return err
 			}
+			return db.SetMigrationCostReduced(event.VNI, event.State.Current, event.State.Next)
+		}
+	} else if event.State.Type == MigrationCostReduced {
+		if node == event.State.Next {
 			AddMigrationTimer(event.VNI)
-			return db.SetMigrationTimerStarted(event.VNI, event.State.Current, event.State.Next)
 		}
 	} else if event.State.Type == FailoverDecided {
 		if node == event.State.Next {
@@ -82,7 +85,6 @@ func ProcessVNIEvent(node string, leader LeaderEvent, event VNIEvent, frr *FRRCl
 			if err != nil {
 				return err
 			}
-			// problem: since the old node sets idle, it will use its lease. when it fails, the key is not deleted
 			return db.SetIdle(event.VNI, event.State.Next)
 		}
 	}
