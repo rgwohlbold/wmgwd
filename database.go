@@ -12,11 +12,8 @@ import (
 
 const EtcdTimeout = 1 * time.Second
 const EtcdLeaseTTL = 1
-const EtcdLeaseInterval = 200 * time.Millisecond
 
 const EtcdVNIPrefix = "/wmgwd/vni/"
-
-const EtcdNodePrefix = "/wmgwd/node/"
 
 type Database struct {
 	*v3.Client
