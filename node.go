@@ -6,25 +6,24 @@ import (
 	v3 "go.etcd.io/etcd/client/v3"
 )
 
+type NewNodeEventIngestor struct{}
+
 type NewNodeEvent struct {
 	Node string
 }
 
-func GenerateNewNodeEvents(ctx context.Context, newNodeChan chan<- NewNodeEvent) {
-	client, err := v3.New(v3.Config{
-		Endpoints: []string{"http://localhost:2379"},
-	})
+func (_ NewNodeEventIngestor) Ingest(ctx context.Context, node string, newNodeChan chan<- NewNodeEvent, setupChan chan<- struct{}) {
+	db, err := NewDatabase(node)
 	if err != nil {
-		log.Fatal().Err(err).Msg("node-watcher: failed to connect to etcd")
+		log.Fatal().Err(err).Msg("node-watcher: failed to connect to database")
 	}
-	defer client.Close()
 
-	watchChan := client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix())
-
+	watchChan := db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix())
+	setupChan <- struct{}{}
 	for {
 		e, ok := <-watchChan
 		if !ok {
-			log.Info().Msg("node-watcher: context done")
+			log.Debug().Msg("node-watcher: context done")
 			break
 		}
 		for _, ev := range e.Events {

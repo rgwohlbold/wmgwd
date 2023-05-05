@@ -14,8 +14,12 @@ type LeaderEvent struct {
 	Key      string
 }
 
-// GenerateLeaderEvents makes the node participate in leader-elections. The channel is sent true when the node becomes the leader, and false when it becomes a follower.
-func GenerateLeaderEvents(ctx context.Context, node string, leaderChan chan<- LeaderEvent) {
+type LeaderEventIngestor struct{}
+
+func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan chan<- LeaderEvent, setupChan chan<- struct{}) {
+	// we will never miss a relevant leader event: we are followers first and always observe us being elected
+	setupChan <- struct{}{}
+
 	db, err := NewDatabase(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
@@ -59,7 +63,7 @@ func GenerateLeaderEvents(ctx context.Context, node string, leaderChan chan<- Le
 end:
 	ctx, cancel := context.WithTimeout(context.Background(), ResignTimeout)
 	defer cancel()
-	log.Info().Msg("leader-election: context done")
+	log.Debug().Msg("leader-election: context done")
 	err = election.Resign(context.Background())
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to resign")

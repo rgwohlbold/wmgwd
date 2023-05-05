@@ -34,12 +34,6 @@ const (
 	FailoverDecided
 )
 
-type VNIState struct {
-	Type    VNIStateType `json:"type"`
-	Current string       `json:"current"`
-	Next    string       `json:"next"`
-}
-
 func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
 	defer cancel()

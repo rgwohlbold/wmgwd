@@ -9,7 +9,20 @@ import (
 	"strings"
 )
 
-func GenerateWatchEvents(ctx context.Context, node string, ch chan<- VNIEvent) {
+type VNIState struct {
+	Type    VNIStateType `json:"type"`
+	Current string       `json:"current"`
+	Next    string       `json:"next"`
+}
+
+type VNIEvent struct {
+	State VNIState
+	VNI   int
+}
+
+type VNIEventIngestor struct{}
+
+func (_ VNIEventIngestor) Ingest(ctx context.Context, node string, ch chan<- VNIEvent, setupChan chan<- struct{}) {
 	db, err := NewDatabase(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("vni-watcher: failed to connect to database")
@@ -17,10 +30,11 @@ func GenerateWatchEvents(ctx context.Context, node string, ch chan<- VNIEvent) {
 	defer db.Close()
 
 	watchChan := db.client.Watch(context.Background(), EtcdVNIPrefix, v3.WithPrefix())
+	setupChan <- struct{}{}
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Msg("vni-watcher: context done")
+			log.Debug().Msg("vni-watcher: context done")
 			return
 		case e := <-watchChan:
 			for _, ev := range e.Events {
@@ -46,41 +60,4 @@ func GenerateWatchEvents(ctx context.Context, node string, ch chan<- VNIEvent) {
 			}
 		}
 	}
-}
-
-func ProcessVNIEvent(node string, leader LeaderEvent, event VNIEvent, frr *FRRClient, db *Database) error {
-	if event.State.Type == Unassigned {
-		if leader.IsLeader {
-			return db.SetFailoverDecided(event.VNI, event.State.Current, node)
-		}
-	} else if event.State.Type == MigrationDecided {
-		if node == event.State.Next {
-			err := frr.Advertise(event.VNI)
-			if err != nil {
-				return err
-			}
-			return db.SetMigrationInterfacesCreated(event.VNI, event.State.Current, event.State.Next)
-		}
-	} else if event.State.Type == MigrationInterfacesCreated {
-		if node == event.State.Current {
-			err := frr.Withdraw(event.VNI)
-			if err != nil {
-				return err
-			}
-			return db.SetMigrationCostReduced(event.VNI, event.State.Current, event.State.Next)
-		}
-	} else if event.State.Type == MigrationCostReduced {
-		if node == event.State.Next {
-			AddMigrationTimer(event.VNI)
-		}
-	} else if event.State.Type == FailoverDecided {
-		if node == event.State.Next {
-			err := frr.Advertise(event.VNI)
-			if err != nil {
-				return err
-			}
-			return db.SetIdle(event.VNI, event.State.Next)
-		}
-	}
-	return nil
 }
