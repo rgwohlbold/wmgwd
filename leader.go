@@ -4,10 +4,7 @@ import (
 	"context"
 	"github.com/rs/zerolog/log"
 	"go.etcd.io/etcd/client/v3/concurrency"
-	"time"
 )
-
-const ResignTimeout = 1 * time.Second
 
 type LeaderEvent struct {
 	IsLeader bool
@@ -20,14 +17,14 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 	// we will never miss a relevant leader event: we are followers first and always observe us being elected
 	setupChan <- struct{}{}
 
-	db, err := NewDatabase(node)
+	db, err := NewDatabase()
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
 	}
 	defer db.Close()
 
 	leaderChan <- LeaderEvent{IsLeader: false}
-	session, err := concurrency.NewSession(db.client, concurrency.WithTTL(1))
+	session, err := concurrency.NewSession(db.client, concurrency.WithTTL(EtcdLeaseTTL))
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to create session")
 	}
@@ -37,9 +34,9 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 			log.Error().Err(err).Msg("leader-election: failed to close session")
 		}
 	}(session)
-	election := concurrency.NewElection(session, "/wmgwd/leader")
-	log.Info().Msg("leader-election: campaigning")
+	election := concurrency.NewElection(session, EtcdLeaderPrefix)
 	for {
+		log.Info().Msg("leader-election: campaigning")
 		err = election.Campaign(ctx, node)
 		if err != nil {
 			log.Fatal().Err(err).Msg("leader-election: campaign failed")
@@ -61,7 +58,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 		}
 	}
 end:
-	ctx, cancel := context.WithTimeout(context.Background(), ResignTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 	log.Debug().Msg("leader-election: context done")
 	err = election.Resign(context.Background())

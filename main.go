@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterNode(node string) error {
-	db, err := NewDatabase(node)
+	db, err := NewDatabase()
 	if err != nil {
 		return err
 	}

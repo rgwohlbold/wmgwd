@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
 	"strconv"
@@ -16,6 +15,8 @@ const EtcdLeaseTTL = 5
 const EtcdVNIPrefix = "/wmgwd/vni/"
 
 const EtcdNodePrefix = "/wmgwd/node/"
+
+const EtcdLeaderPrefix = "/wmgwd/leader/"
 
 type Database struct {
 	client          *v3.Client
@@ -46,7 +47,7 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 	return lease, nil
 }
 
-func NewDatabase(node string) (*Database, error) {
+func NewDatabase() (*Database, error) {
 	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
@@ -88,22 +89,6 @@ func (db *Database) Register(node string) error {
 	return err
 }
 
-func (db *Database) Leader() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	resp, err := db.client.MemberList(ctx)
-	defer cancel()
-
-	if err != nil {
-		return "", err
-	}
-	for _, m := range resp.Members {
-		if !m.GetIsLearner() {
-			return m.Name, nil
-		}
-	}
-	return "", errors.New("no leader found")
-}
-
 func stateTypeToString(state VNIStateType) string {
 	switch state {
 	case Unassigned:
@@ -141,18 +126,6 @@ func (db *Database) setVNIState(vni int, state VNIState) error {
 	return err
 }
 
-func (db *Database) StartMigrationTimer(vni int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	defer cancel()
-	resp, err := db.client.Grant(ctx, int64(MigrationTimeout/time.Second))
-	if err != nil {
-		return err
-	}
-	// TODO: think about the necessity of the database
-	_, err = db.client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni)+"/timer", "", v3.WithLease(resp.ID))
-	return err
-}
-
 func (db *Database) SetFailoverDecided(vni int, current string, next string) error {
 	return db.setVNIState(vni, VNIState{
 		Type:    FailoverDecided,
@@ -167,7 +140,6 @@ func (db *Database) SetMigrationInterfacesCreated(vni int, current string, next 
 		Current: current,
 		Next:    next,
 	})
-
 }
 
 func (db *Database) SetMigrationCostReduced(vni int, current string, next string) error {

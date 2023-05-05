@@ -23,7 +23,7 @@ type VNIEvent struct {
 type VNIEventIngestor struct{}
 
 func (_ VNIEventIngestor) Ingest(ctx context.Context, node string, ch chan<- VNIEvent, setupChan chan<- struct{}) {
-	db, err := NewDatabase(node)
+	db, err := NewDatabase()
 	if err != nil {
 		log.Fatal().Err(err).Msg("vni-watcher: failed to connect to database")
 	}

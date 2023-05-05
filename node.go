@@ -13,7 +13,7 @@ type NewNodeEvent struct {
 }
 
 func (_ NewNodeEventIngestor) Ingest(ctx context.Context, node string, newNodeChan chan<- NewNodeEvent, setupChan chan<- struct{}) {
-	db, err := NewDatabase(node)
+	db, err := NewDatabase()
 	if err != nil {
 		log.Fatal().Err(err).Msg("node-watcher: failed to connect to database")
 	}
