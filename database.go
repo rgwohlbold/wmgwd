@@ -110,11 +110,14 @@ func stateTypeToString(state VNIStateType) string {
 }
 
 func (db *Database) setVNIState(vni int, state VNIState, oldState VNIState, leaderState LeaderState) error {
-	if state.Next == "" {
-		log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni).Str("current", state.Current).Msg("setting state")
-	} else {
-		log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni).Str("current", state.Current).Str("next", state.Next).Msg("setting state")
+	event := log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni)
+	if state.Current != "" {
+		event = event.Str("current", state.Current)
 	}
+	if state.Next != "" {
+		event = event.Str("next", state.Next)
+	}
+	event.Msg("setting state")
 
 	key := EtcdVNIPrefix + strconv.Itoa(vni)
 
