@@ -14,7 +14,13 @@ type VNIEvent struct {
 	VNI   int
 }
 
-func ProcessEvents(ctx context.Context, node string, vniChan chan VNIEvent, leaderChan <-chan LeaderEvent, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, frr *FRRClient, db *Database, vnis []int) {
+func ProcessEvents(ctx context.Context, node string, vniChan chan VNIEvent, leaderChan <-chan LeaderEvent, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, vnis []int) {
+	db, err := NewDatabase(node)
+	if err != nil {
+		log.Fatal().Err(err).Msg("event-processor: failed to connect to database")
+	}
+	frr := NewFRRClient()
+
 	leader := <-leaderChan
 	for {
 		select {
@@ -58,6 +64,21 @@ func ProcessEvents(ctx context.Context, node string, vniChan chan VNIEvent, lead
 	}
 }
 
+func RegisterNode(node string) error {
+	db, err := NewDatabase(node)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	err = db.Register(node)
+	if err != nil {
+		return err
+	}
+	log.Info().Msg("registered node")
+	return nil
+}
+
 func main() {
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
@@ -77,14 +98,6 @@ func main() {
 		}
 	}
 
-	db, err := NewDatabase(node)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to database")
-	}
-	defer db.Close()
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to register node")
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	log.Info().Msg("starting leader election loop")
@@ -96,19 +109,20 @@ func main() {
 	go GenerateWatchEvents(ctx, node, eventChan)
 	go GenerateTimerEvents(ctx, timerChan)
 	go GenerateNewNodeEvents(ctx, newNodeChan)
-	go GenerateLeaderEvents(ctx, db, node, leaderChan)
-	go ProcessEvents(ctx, node, eventChan, leaderChan, newNodeChan, timerChan, frr, db, vnis)
+	go GenerateLeaderEvents(ctx, node, leaderChan)
+	go ProcessEvents(ctx, node, eventChan, leaderChan, newNodeChan, timerChan, vnis)
 
 	signalChan := make(chan os.Signal)
 	signal.Notify(signalChan, os.Interrupt)
 
-	// Assure that all listeners have been set up when we register
 	<-time.After(1 * time.Second)
-	err = db.Register(node)
+	err := RegisterNode(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to register node")
 	}
-	log.Info().Msg("registered node")
+
+	// Assure that all listeners have been set up when we register
+	<-time.After(1 * time.Second)
 
 	<-signalChan
 	cancel()

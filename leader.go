@@ -15,7 +15,13 @@ type LeaderEvent struct {
 }
 
 // GenerateLeaderEvents makes the node participate in leader-elections. The channel is sent true when the node becomes the leader, and false when it becomes a follower.
-func GenerateLeaderEvents(ctx context.Context, db *Database, node string, leaderChan chan<- LeaderEvent) {
+func GenerateLeaderEvents(ctx context.Context, node string, leaderChan chan<- LeaderEvent) {
+	db, err := NewDatabase(node)
+	if err != nil {
+		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
+	}
+	defer db.Close()
+
 	leaderChan <- LeaderEvent{IsLeader: false}
 	session, err := concurrency.NewSession(db.client, concurrency.WithTTL(1))
 	if err != nil {
