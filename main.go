@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterNode(node string) error {
-	db, err := NewDatabase()
+	db, err := NewDatabase(node)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func main() {
 		cancel()
 	}()
 
-	leaderChan := make(chan LeaderEvent)
+	leaderChan := make(chan LeaderState)
 	vniChan := make(chan VNIEvent, len(vnis))
 	newNodeChan := make(chan NewNodeEvent)
 	timerChan := make(chan TimerEvent)
@@ -60,7 +60,7 @@ func main() {
 	RunEventIngestor[VNIEvent](ctx, node, VNIEventIngestor{}, vniChan, wg)
 	RunEventIngestor[TimerEvent](ctx, node, TimerEventIngestor{}, timerChan, wg)
 	RunEventIngestor[NewNodeEvent](ctx, node, NewNodeEventIngestor{}, newNodeChan, wg)
-	RunEventIngestor[LeaderEvent](ctx, node, LeaderEventIngestor{}, leaderChan, wg)
+	RunEventIngestor[LeaderState](ctx, node, LeaderEventIngestor{}, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {

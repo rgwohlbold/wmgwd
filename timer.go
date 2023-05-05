@@ -12,7 +12,8 @@ type TimerEventIngestor struct{}
 const MigrationTimeout = 10 * time.Second
 
 type TimerEvent struct {
-	VNI int
+	VNI   int
+	State VNIState
 }
 
 var lock sync.Mutex

@@ -6,24 +6,24 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
-type LeaderEvent struct {
-	IsLeader bool
-	Key      string
+type LeaderState struct {
+	Node string
+	Key  string
 }
 
 type LeaderEventIngestor struct{}
 
-func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan chan<- LeaderEvent, setupChan chan<- struct{}) {
+func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan chan<- LeaderState, setupChan chan<- struct{}) {
 	// we will never miss a relevant leader event: we are followers first and always observe us being elected
 	setupChan <- struct{}{}
 
-	db, err := NewDatabase()
+	db, err := NewDatabase(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
 	}
 	defer db.Close()
 
-	leaderChan <- LeaderEvent{IsLeader: false}
+	leaderChan <- LeaderState{Node: "", Key: ""}
 	session, err := concurrency.NewSession(db.client, concurrency.WithTTL(EtcdLeaseTTL))
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to create session")
@@ -34,7 +34,10 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 			log.Error().Err(err).Msg("leader-election: failed to close session")
 		}
 	}(session)
-	election := concurrency.NewElection(session, EtcdLeaderPrefix)
+
+	// strip slash since it is added by the concurrency library
+	electionKey := EtcdLeaderPrefix[:len(EtcdLeaderPrefix)-1]
+	election := concurrency.NewElection(session, electionKey)
 	for {
 		log.Info().Msg("leader-election: campaigning")
 		err = election.Campaign(ctx, node)
@@ -42,7 +45,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 			log.Fatal().Err(err).Msg("leader-election: campaign failed")
 		}
 		log.Info().Str("key", election.Key()).Msg("leader-election: got elected")
-		leaderChan <- LeaderEvent{IsLeader: true, Key: election.Key()}
+		leaderChan <- LeaderState{Node: node, Key: election.Key()}
 		observeChan := election.Observe(ctx)
 		for {
 			select {
@@ -51,7 +54,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 					continue
 				}
 				log.Info().Msg("leader-election: lost election")
-				leaderChan <- LeaderEvent{IsLeader: false, Key: election.Key()}
+				leaderChan <- LeaderState{Node: node, Key: election.Key()}
 			case <-ctx.Done():
 				goto end
 			}

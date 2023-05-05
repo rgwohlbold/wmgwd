@@ -20,6 +20,7 @@ const EtcdLeaderPrefix = "/wmgwd/leader/"
 
 type Database struct {
 	client          *v3.Client
+	node            string
 	lease           v3.LeaseID
 	cancelKeepalive context.CancelFunc
 }
@@ -47,7 +48,7 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 	return lease, nil
 }
 
-func NewDatabase() (*Database, error) {
+func NewDatabase(node string) (*Database, error) {
 	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
@@ -74,7 +75,7 @@ func NewDatabase() (*Database, error) {
 		}
 	}()
 
-	return &Database{client, lease.ID, cancel}, nil
+	return &Database{client, node, lease.ID, cancel}, nil
 }
 
 func (db *Database) Close() error {
@@ -108,62 +109,39 @@ func stateTypeToString(state VNIStateType) string {
 	}
 }
 
-func (db *Database) setVNIState(vni int, state VNIState) error {
+func (db *Database) setVNIState(vni int, state VNIState, oldState VNIState, leaderState LeaderState) error {
 	if state.Next == "" {
 		log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni).Str("current", state.Current).Msg("setting state")
 	} else {
 		log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni).Str("current", state.Current).Str("next", state.Next).Msg("setting state")
 	}
 
-	serialized, err := json.Marshal(state)
+	key := EtcdVNIPrefix + strconv.Itoa(vni)
+
+	serializedState, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+
+	serializedOldState, err := json.Marshal(oldState)
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	_, err = db.client.Put(ctx, EtcdVNIPrefix+strconv.Itoa(vni), string(serialized), v3.WithLease(db.lease))
 	defer cancel()
+
+	var conditions []v3.Cmp
+	if oldState.Type == Unassigned {
+		conditions = append(conditions, v3.Compare(v3.CreateRevision(key), "=", 0))
+	} else {
+		conditions = append(conditions, v3.Compare(v3.Value(key), "=", string(serializedOldState)))
+	}
+	if leaderState.Node == db.node {
+		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
+	}
+	_, err = db.client.Txn(ctx).If(conditions...).Then(v3.OpPut(key, string(serializedState), v3.WithLease(db.lease))).Commit()
 	return err
-}
-
-func (db *Database) SetFailoverDecided(vni int, current string, next string) error {
-	return db.setVNIState(vni, VNIState{
-		Type:    FailoverDecided,
-		Current: current,
-		Next:    next,
-	})
-}
-
-func (db *Database) SetMigrationInterfacesCreated(vni int, current string, next string) error {
-	return db.setVNIState(vni, VNIState{
-		Type:    MigrationInterfacesCreated,
-		Current: current,
-		Next:    next,
-	})
-}
-
-func (db *Database) SetMigrationCostReduced(vni int, current string, next string) error {
-	return db.setVNIState(vni, VNIState{
-		Type:    MigrationCostReduced,
-		Current: current,
-		Next:    next,
-	})
-}
-
-func (db *Database) SetIdle(vni int, next string) error {
-	return db.setVNIState(vni, VNIState{
-		Type:    Idle,
-		Current: next,
-		Next:    "",
-	})
-}
-
-func (db *Database) SetMigrationDecided(vni int, current string, next string) error {
-	return db.setVNIState(vni, VNIState{
-		Type:    MigrationDecided,
-		Current: current,
-		Next:    next,
-	})
 }
 
 func (db *Database) GetState(vni int) (VNIState, error) {
