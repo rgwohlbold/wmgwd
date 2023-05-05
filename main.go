@@ -5,6 +5,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"os"
+	"os/signal"
 	"time"
 )
 
@@ -13,26 +14,35 @@ type VNIEvent struct {
 	VNI   int
 }
 
-func ProcessEvents(node string, vniChan chan VNIEvent, leaderChan <-chan LeaderEvent, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, frr *FRRClient, db *Database, vnis []int) {
+func ProcessEvents(ctx context.Context, node string, vniChan chan VNIEvent, leaderChan <-chan LeaderEvent, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, frr *FRRClient, db *Database, vnis []int) {
 	leader := <-leaderChan
 	for {
 		select {
+		case <-ctx.Done():
+			log.Info().Msg("event-processor: context done")
+			return
 		case event := <-vniChan:
 			err := ProcessVNIEvent(node, leader, event, frr, db)
 			if err != nil {
-				log.Fatal().Err(err).Msg("failed to process event")
+				log.Fatal().Err(err).Msg("event-processor: failed to process event")
 			}
 		case leader = <-leaderChan:
-			GenerateLeaderChangeEvents(vniChan, db, vnis)
+			for _, vni := range vnis {
+				state, err := db.GetState(vni)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to get state")
+				}
+				vniChan <- VNIEvent{VNI: vni, State: state}
+			}
 		case newNodeEvent := <-newNodeChan:
 			if leader.IsLeader && node != newNodeEvent.Node {
 				state, err := db.GetState(vnis[0])
 				if err != nil {
-					log.Fatal().Err(err).Msg("failed to get state")
+					log.Fatal().Err(err).Msg("event-processor: failed to get state")
 				}
 				err = db.SetMigrationDecided(vnis[0], state.Current, newNodeEvent.Node)
 				if err != nil {
-					log.Fatal().Err(err).Msg("failed to set migration decided")
+					log.Fatal().Err(err).Msg("event-processor: failed to set migration decided")
 				}
 			}
 		case timerEvent := <-timerChan:
@@ -42,7 +52,7 @@ func ProcessEvents(node string, vniChan chan VNIEvent, leaderChan <-chan LeaderE
 				Next:    "",
 			})
 			if err != nil {
-				log.Fatal().Err(err).Msg("failed to set vni state")
+				log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
 			}
 		}
 	}
@@ -67,8 +77,6 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
-
 	db, err := NewDatabase(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to connect to database")
@@ -77,6 +85,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to register node")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	log.Info().Msg("starting leader election loop")
 	leaderChan := make(chan LeaderEvent)
@@ -84,11 +93,14 @@ func main() {
 	newNodeChan := make(chan NewNodeEvent)
 	timerChan := make(chan TimerEvent)
 
-	go GenerateWatchEvents(node, eventChan)
+	go GenerateWatchEvents(ctx, node, eventChan)
 	go GenerateTimerEvents(ctx, timerChan)
 	go GenerateNewNodeEvents(ctx, newNodeChan)
 	go GenerateLeaderEvents(ctx, db, node, leaderChan)
-	go ProcessEvents(node, eventChan, leaderChan, newNodeChan, timerChan, frr, db, vnis)
+	go ProcessEvents(ctx, node, eventChan, leaderChan, newNodeChan, timerChan, frr, db, vnis)
+
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, os.Interrupt)
 
 	// Assure that all listeners have been set up when we register
 	<-time.After(1 * time.Second)
@@ -98,5 +110,8 @@ func main() {
 	}
 	log.Info().Msg("registered node")
 
-	<-ctx.Done()
+	<-signalChan
+	cancel()
+
+	time.Sleep(10 * time.Second)
 }

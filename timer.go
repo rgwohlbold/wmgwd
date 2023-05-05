@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/rs/zerolog/log"
 	"sync"
 	"time"
 )
@@ -37,6 +38,7 @@ func GenerateTimerEvents(ctx context.Context, timerChan chan<- TimerEvent) {
 		}
 		select {
 		case <-ctx.Done():
+			log.Info().Msg("timer: context done")
 			return
 		case <-newTimerChan:
 			continue
