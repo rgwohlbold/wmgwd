@@ -26,7 +26,14 @@ func RegisterNode(node string) error {
 
 func main() {
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	fileInfo, err := os.Stderr.Stat()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to stat stderr")
+	} else {
+		if fileInfo.Mode()&os.ModeCharDevice != 0 {
+			log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+		}
+	}
 
 	if len(os.Args) != 2 {
 		log.Fatal().Msg("usage: wmgwd <node>")
@@ -68,10 +75,17 @@ func main() {
 		wg.Done()
 	}()
 
-	err := RegisterNode(node)
+	err = RegisterNode(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to register node")
 	}
 
 	wg.Wait()
+	log.Info().Msg("exiting, withdrawing everything")
+	for _, vni := range vnis {
+		err := frr.Withdraw(vni)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to withdraw")
+		}
+	}
 }

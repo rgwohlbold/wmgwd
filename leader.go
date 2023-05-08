@@ -42,6 +42,9 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 		log.Info().Msg("leader-election: campaigning")
 		err = election.Campaign(ctx, node)
 		if err != nil {
+			if err == context.Canceled {
+				goto end
+			}
 			log.Fatal().Err(err).Msg("leader-election: campaign failed")
 		}
 		log.Info().Str("key", election.Key()).Msg("leader-election: got elected")

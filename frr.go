@@ -9,7 +9,7 @@ import (
 )
 
 const FRRAutonomousSystem = 65000
-const MockFRR = true
+const MockFRR = false
 
 type FRRClient struct {
 }
@@ -37,6 +37,9 @@ func (frr *FRRClient) Advertise(vni int) error {
 	iface := "veth" + strconv.Itoa(vni) + "p"
 	out, err := frr.vtysh([]string{
 		"configure terminal",
+		"interface bond100",
+		"evpn mh es-id 00:00:00:00:00:00:00:00:00:01",
+		"exit", // interface bond100
 		"interface " + iface,
 		"no ospf cost",
 		"exit", // interface,
@@ -67,6 +70,9 @@ func (frr *FRRClient) Withdraw(vni int) error {
 	iface := "veth" + strconv.Itoa(vni) + "p"
 	out, err := frr.vtysh([]string{
 		"configure terminal",
+		"interface bond100",
+		"no evpn mh es-id",
+		"exit", // interface bond100
 		"interface " + iface,
 		"ospf cost 65535",
 		"exit", // interface,
