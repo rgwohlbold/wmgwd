@@ -6,10 +6,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const FRRAutonomousSystem = 65000
 const MockFRR = false
+
+var mutex sync.Mutex
 
 type FRRClient struct {
 }
@@ -21,6 +24,9 @@ func NewFRRClient() *FRRClient {
 func (frr *FRRClient) Close() {}
 
 func (frr *FRRClient) vtysh(commands []string) ([]byte, error) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	input := make([]string, 2*len(commands))
 	for i, c := range commands {
 		input[2*i] = "-c"
