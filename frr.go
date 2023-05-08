@@ -34,7 +34,13 @@ func (frr *FRRClient) vtysh(commands []string) ([]byte, error) {
 		input[2*i] = "-c"
 		input[2*i+1] = c
 	}
-	return exec.Command("vtysh", input...).Output()
+	log.Debug().Strs("input", input).Msg("vtysh")
+	output, err := exec.Command("vtysh", input...).Output()
+	if err != nil {
+		return output, err
+	}
+	log.Debug().Str("output", string(output)).Msg("vtysh")
+	return output, err
 }
 
 func (frr *FRRClient) vniToEsi(vni uint64) string {
@@ -53,13 +59,14 @@ func (frr *FRRClient) Advertise(vni uint64) error {
 	if MockFRR {
 		return nil
 	}
-	iface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	bondInterface := "bond" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
-		"interface bond100",
+		"interface " + bondInterface,
 		"evpn mh es-id " + frr.vniToEsi(vni),
 		"exit", // interface bond100
-		"interface " + iface,
+		"interface " + ospfInterface,
 		"no ospf cost",
 		"exit", // interface,
 		"router bgp " + strconv.Itoa(FRRAutonomousSystem),
@@ -86,13 +93,14 @@ func (frr *FRRClient) Withdraw(vni uint64) error {
 	if MockFRR {
 		return nil
 	}
-	iface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	bondInterface := "bond" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
-		"interface bond100",
+		"interface " + bondInterface,
 		"no evpn mh es-id",
 		"exit", // interface bond100
-		"interface " + iface,
+		"interface " + ospfInterface,
 		"ospf cost 65535",
 		"exit", // interface,
 		"router bgp " + strconv.Itoa(FRRAutonomousSystem),
