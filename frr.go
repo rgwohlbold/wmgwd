@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"github.com/rs/zerolog/log"
 	"os/exec"
@@ -35,23 +36,34 @@ func (frr *FRRClient) vtysh(commands []string) ([]byte, error) {
 	return exec.Command("vtysh", input...).Output()
 }
 
-func (frr *FRRClient) Advertise(vni int) error {
-	log.Info().Int("vni", vni).Msg("advertising")
+func (frr *FRRClient) vniToEsi(vni uint64) string {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, vni)
+	esi := "00:00:"
+	for i := 0; i < 8; i++ {
+		esi += strconv.FormatInt(int64(b[i]), 16)
+		esi += ":"
+	}
+	return esi
+}
+
+func (frr *FRRClient) Advertise(vni uint64) error {
+	log.Info().Uint64("vni", vni).Msg("advertising")
 	if MockFRR {
 		return nil
 	}
-	iface := "veth" + strconv.Itoa(vni) + "p"
+	iface := "veth" + strconv.FormatUint(vni, 10) + "p"
 	out, err := frr.vtysh([]string{
 		"configure terminal",
 		"interface bond100",
-		"evpn mh es-id 00:00:00:00:00:00:00:00:00:01",
+		"evpn mh es-id " + frr.vniToEsi(vni),
 		"exit", // interface bond100
 		"interface " + iface,
 		"no ospf cost",
 		"exit", // interface,
 		"router bgp " + strconv.Itoa(FRRAutonomousSystem),
 		"address-family l2vpn evpn",
-		"vni " + strconv.Itoa(vni),
+		"vni " + strconv.FormatUint(vni, 10),
 		"advertise-svi-ip",
 		"exit", // vni
 		"exit", // address-family
@@ -68,12 +80,12 @@ func (frr *FRRClient) Advertise(vni int) error {
 	return nil
 }
 
-func (frr *FRRClient) Withdraw(vni int) error {
-	log.Info().Int("vni", vni).Msg("withdrawing")
+func (frr *FRRClient) Withdraw(vni uint64) error {
+	log.Info().Uint64("vni", vni).Msg("withdrawing")
 	if MockFRR {
 		return nil
 	}
-	iface := "veth" + strconv.Itoa(vni) + "p"
+	iface := "veth" + strconv.FormatUint(vni, 10) + "p"
 	out, err := frr.vtysh([]string{
 		"configure terminal",
 		"interface bond100",
@@ -84,7 +96,7 @@ func (frr *FRRClient) Withdraw(vni int) error {
 		"exit", // interface,
 		"router bgp " + strconv.Itoa(FRRAutonomousSystem),
 		"address-family l2vpn evpn",
-		"vni " + strconv.Itoa(vni),
+		"vni " + strconv.FormatUint(vni, 10),
 		"no advertise-svi-ip",
 		"exit", // vni
 		"exit", // address-family

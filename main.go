@@ -42,7 +42,7 @@ func main() {
 
 	frr := NewFRRClient()
 
-	vnis := []int{100, 200, 300}
+	vnis := []uint64{100, 200, 300}
 	for _, vni := range vnis {
 		err := frr.Withdraw(vni)
 		if err != nil {
@@ -59,12 +59,12 @@ func main() {
 	}()
 
 	leaderChan := make(chan LeaderState)
-	vniChan := make(chan VNIEvent, len(vnis))
+	vniChan := make(chan VniEvent, len(vnis))
 	newNodeChan := make(chan NewNodeEvent)
 	timerChan := make(chan TimerEvent)
 
 	wg := new(sync.WaitGroup)
-	RunEventIngestor[VNIEvent](ctx, node, VNIEventIngestor{}, vniChan, wg)
+	RunEventIngestor[VniEvent](ctx, node, VniEventIngestor{}, vniChan, wg)
 	RunEventIngestor[TimerEvent](ctx, node, TimerEventIngestor{}, timerChan, wg)
 	RunEventIngestor[NewNodeEvent](ctx, node, NewNodeEventIngestor{}, newNodeChan, wg)
 	RunEventIngestor[LeaderState](ctx, node, LeaderEventIngestor{}, leaderChan, wg)

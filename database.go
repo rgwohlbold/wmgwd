@@ -12,7 +12,7 @@ import (
 const EtcdTimeout = 1 * time.Second
 const EtcdLeaseTTL = 5
 
-const EtcdVNIPrefix = "/wmgwd/vni/"
+const EtcdVniPrefix = "/wmgwd/vni/"
 
 const EtcdNodePrefix = "/wmgwd/node/"
 
@@ -25,10 +25,10 @@ type Database struct {
 	cancelKeepalive context.CancelFunc
 }
 
-type VNIStateType int
+type VniStateType int
 
 const (
-	Unassigned VNIStateType = iota
+	Unassigned VniStateType = iota
 	Idle
 	MigrationDecided
 	MigrationInterfacesCreated
@@ -90,7 +90,7 @@ func (db *Database) Register(node string) error {
 	return err
 }
 
-func stateTypeToString(state VNIStateType) string {
+func stateTypeToString(state VniStateType) string {
 	switch state {
 	case Unassigned:
 		return "unassigned"
@@ -109,8 +109,8 @@ func stateTypeToString(state VNIStateType) string {
 	}
 }
 
-func (db *Database) setVNIState(vni int, state VNIState, oldState VNIState, leaderState LeaderState) error {
-	event := log.Debug().Str("type", stateTypeToString(state.Type)).Int("vni", vni)
+func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, leaderState LeaderState) error {
+	event := log.Debug().Str("type", stateTypeToString(state.Type)).Uint64("vni", vni)
 	if state.Current != "" {
 		event = event.Str("current", state.Current)
 	}
@@ -119,7 +119,7 @@ func (db *Database) setVNIState(vni int, state VNIState, oldState VNIState, lead
 	}
 	event.Msg("setting state")
 
-	key := EtcdVNIPrefix + strconv.Itoa(vni)
+	key := EtcdVniPrefix + strconv.FormatUint(vni, 10)
 
 	serializedState, err := json.Marshal(state)
 	if err != nil {
@@ -147,20 +147,20 @@ func (db *Database) setVNIState(vni int, state VNIState, oldState VNIState, lead
 	return err
 }
 
-func (db *Database) GetState(vni int) (VNIState, error) {
+func (db *Database) GetState(vni uint64) (VniState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	resp, err := db.client.Get(ctx, EtcdVNIPrefix+strconv.Itoa(vni))
+	resp, err := db.client.Get(ctx, EtcdVniPrefix+strconv.FormatUint(vni, 10))
 	if err != nil {
-		return VNIState{}, err
+		return VniState{}, err
 	}
 	if len(resp.Kvs) == 0 {
-		return VNIState{Type: Unassigned}, nil
+		return VniState{Type: Unassigned}, nil
 	}
-	var state VNIState
+	var state VniState
 	err = json.Unmarshal(resp.Kvs[0].Value, &state)
 	if err != nil {
-		return VNIState{}, err
+		return VniState{}, err
 	}
 	return state, nil
 }
