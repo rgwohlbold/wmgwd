@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"github.com/rs/zerolog/log"
 	"os/exec"
 	"strconv"
@@ -39,10 +40,10 @@ func (frr *FRRClient) vtysh(commands []string) ([]byte, error) {
 func (frr *FRRClient) vniToEsi(vni uint64) string {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, vni)
-	esi := "00:00:"
+	esi := "00:00"
 	for i := 0; i < 8; i++ {
-		esi += strconv.FormatInt(int64(b[i]), 16)
 		esi += ":"
+		esi += fmt.Sprintf("%02x", b[i])
 	}
 	return esi
 }
