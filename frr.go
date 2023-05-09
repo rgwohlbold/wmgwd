@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"math/rand"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -65,6 +66,7 @@ func (frr *FRRClient) Advertise(vni uint64) error {
 		"configure terminal",
 		"interface " + bondInterface,
 		"evpn mh es-id " + frr.vniToEsi(vni),
+		"evpn mh es-df-pref " + strconv.Itoa(rand.Intn(32767)),
 		"exit", // interface bond100
 		"interface " + ospfInterface,
 		"no ospf cost",
@@ -99,6 +101,7 @@ func (frr *FRRClient) Withdraw(vni uint64) error {
 		"configure terminal",
 		"interface " + bondInterface,
 		"no evpn mh es-id",
+		"no evpn mh es-df-pref",
 		"exit", // interface bond100
 		"interface " + ospfInterface,
 		"ospf cost 65535",
