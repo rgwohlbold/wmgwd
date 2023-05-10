@@ -6,6 +6,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 )
 
@@ -25,6 +26,7 @@ func RegisterNode(node string) error {
 }
 
 func main() {
+	runtime.GOMAXPROCS(3) // vtysh, frr and go stuff
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	fileInfo, err := os.Stderr.Stat()
 	if err != nil {
@@ -42,11 +44,19 @@ func main() {
 
 	frr := NewFRRClient()
 
-	vnis := []uint64{100, 200, 300}
+	vnis := []uint64{100}
 	for _, vni := range vnis {
-		err := frr.Withdraw(vni)
+		err = frr.WithdrawEvpn(vni)
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to withdraw")
+		}
+		err = frr.WithdrawOspf(vni)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to withdraw")
+		}
+		err = frr.DisableArp(vni)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to disable arp")
 		}
 	}
 
@@ -83,7 +93,11 @@ func main() {
 	wg.Wait()
 	log.Info().Msg("exiting, withdrawing everything")
 	for _, vni := range vnis {
-		err := frr.Withdraw(vni)
+		err = frr.WithdrawEvpn(vni)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to withdraw")
+		}
+		err = frr.WithdrawOspf(vni)
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to withdraw")
 		}

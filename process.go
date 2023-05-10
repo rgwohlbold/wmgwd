@@ -20,50 +20,128 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		}
 	} else if event.State.Type == MigrationDecided {
 		if node == event.State.Next {
-			err := frr.Advertise(event.Vni)
+			err := frr.AdvertiseEvpn(event.Vni)
 			if err != nil {
 				return err
 			}
-			time.Sleep(MigrationTimeout)
-			err = frr.SendGratuitousArp(event.Vni)
+			go func() {
+				time.Sleep(MigrationTimeout)
+				err = frr.AdvertiseOspf(event.Vni)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to advertise OSPF")
+				}
+				time.Sleep(MigrationTimeout)
+				err = db.setVniState(event.Vni, VniState{
+					Type:    MigrationOspfAdvertised,
+					Current: event.State.Current,
+					Next:    event.State.Next,
+				}, event.State, leaderState)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
+				}
+			}()
+		}
+	} else if event.State.Type == MigrationOspfAdvertised {
+		if node == event.State.Current {
+			err := frr.WithdrawOspf(event.Vni)
 			if err != nil {
 				return err
 			}
-			time.Sleep(MigrationTimeout)
+			go func() {
+				time.Sleep(MigrationTimeout)
+				err = db.setVniState(event.Vni, VniState{
+					Type:    MigrationOspfWithdrawn,
+					Current: event.State.Current,
+					Next:    event.State.Next,
+				}, event.State, leaderState)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
+				}
+			}()
+
+		}
+	} else if event.State.Type == MigrationOspfWithdrawn {
+		if node == event.State.Next {
+			err := frr.EnableArp(event.Vni)
+			if err != nil {
+				return err
+			}
 			return db.setVniState(event.Vni, VniState{
-				Type:    MigrationTrafficRedirected,
+				Type:    MigrationArpEnabled,
 				Current: event.State.Current,
-				Next:    node,
+				Next:    event.State.Next,
 			}, event.State, leaderState)
 		}
-	} else if event.State.Type == MigrationTrafficRedirected {
+	} else if event.State.Type == MigrationArpEnabled {
 		if node == event.State.Current {
-			err := frr.Withdraw(event.Vni)
+			err := frr.DisableArp(event.Vni)
 			if err != nil {
 				return err
 			}
-			err = db.setVniState(event.Vni, VniState{
+			return db.setVniState(event.Vni, VniState{
+				Type:    MigrationArpDisabled,
+				Current: event.State.Current,
+				Next:    event.State.Next,
+			}, event.State, leaderState)
+		}
+	} else if event.State.Type == MigrationArpDisabled {
+		if node == event.State.Next {
+			err := frr.SendGratuitousArp(event.Vni)
+			if err != nil {
+				return err
+			}
+			go func() {
+				time.Sleep(MigrationTimeout)
+				err = db.setVniState(event.Vni, VniState{
+					Type:    MigrationGratuitousArpSent,
+					Current: event.State.Current,
+					Next:    event.State.Next,
+				}, event.State, leaderState)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
+				}
+			}()
+		}
+	} else if event.State.Type == MigrationGratuitousArpSent {
+		if node == event.State.Current {
+			err := frr.WithdrawEvpn(event.Vni)
+			if err != nil {
+				return err
+			}
+			return db.setVniState(event.Vni, VniState{
 				Type:    Idle,
 				Current: event.State.Next,
 			}, event.State, leaderState)
-			if err != nil {
-				return err
-			}
 		}
 	} else if event.State.Type == FailoverDecided {
 		if node == event.State.Next {
-			err := frr.Advertise(event.Vni)
+			err := frr.AdvertiseEvpn(event.Vni)
 			if err != nil {
 				return err
 			}
-			err = frr.SendGratuitousArp(event.Vni)
+			err = frr.AdvertiseOspf(event.Vni)
 			if err != nil {
 				return err
 			}
-			return db.setVniState(event.Vni, VniState{
-				Type:    Idle,
-				Current: node,
-			}, event.State, leaderState)
+			err = frr.EnableArp(event.Vni)
+			if err != nil {
+				return err
+			}
+			go func() {
+				time.Sleep(MigrationTimeout)
+				err = frr.SendGratuitousArp(event.Vni)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to send gratuitous arp")
+				}
+				time.Sleep(MigrationTimeout)
+				err = db.setVniState(event.Vni, VniState{
+					Type:    Idle,
+					Current: node,
+				}, event.State, leaderState)
+				if err != nil {
+					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
+				}
+			}()
 		}
 	}
 	return nil

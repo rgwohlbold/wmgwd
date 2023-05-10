@@ -9,7 +9,7 @@ import (
 
 type TimerEventIngestor struct{}
 
-const MigrationTimeout = 15 * time.Second
+const MigrationTimeout = 5 * time.Second
 
 type TimerEvent struct {
 	Vni   uint64
