@@ -59,7 +59,7 @@ func (frr *FRRClient) Advertise(vni uint64) error {
 	if MockFRR {
 		return nil
 	}
-	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	ospfInterface := "br" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
 		"interface " + ospfInterface,
@@ -98,7 +98,7 @@ func (frr *FRRClient) Withdraw(vni uint64) error {
 	if MockFRR {
 		return nil
 	}
-	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
+	ospfInterface := "br" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
 		"interface " + ospfInterface,
