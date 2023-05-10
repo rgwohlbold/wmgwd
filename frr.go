@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -113,12 +114,17 @@ func (frr *FRRClient) WithdrawOspf(vni uint64) error {
 	})
 }
 
+func writeSysctl(key string, value string) error {
+	path := strings.Replace(key, ".", "/", -1)
+	return os.WriteFile("/proc/sys/"+path, []byte(value), 0644)
+}
+
 func (frr *FRRClient) EnableArp(vni uint64) error {
-	return exec.Command("ip", "link", "set", "dev", "br"+strconv.FormatUint(vni, 10), "arp", "on").Run()
+	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "0")
 }
 
 func (frr *FRRClient) DisableArp(vni uint64) error {
-	return exec.Command("ip", "link", "set", "dev", "br"+strconv.FormatUint(vni, 10), "arp", "off").Run()
+	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "3")
 }
 
 func (frr *FRRClient) SendGratuitousArp(vni uint64) error {
