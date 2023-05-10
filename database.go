@@ -31,8 +31,7 @@ const (
 	Unassigned VniStateType = iota
 	Idle
 	MigrationDecided
-	MigrationInterfacesCreated
-	MigrationCostReduced
+	MigrationTrafficRedirected
 	FailoverDecided
 )
 
@@ -98,10 +97,8 @@ func stateTypeToString(state VniStateType) string {
 		return "idle"
 	case MigrationDecided:
 		return "migration-decided"
-	case MigrationInterfacesCreated:
-		return "migration-interfaces-created"
-	case MigrationCostReduced:
-		return "migration-cost-reduced"
+	case MigrationTrafficRedirected:
+		return "migration-traffic-redirected"
 	case FailoverDecided:
 		return "failover-decided"
 	default:

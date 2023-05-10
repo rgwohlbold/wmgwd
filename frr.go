@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"math/rand"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,13 +60,8 @@ func (frr *FRRClient) Advertise(vni uint64) error {
 		return nil
 	}
 	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
-	bondInterface := "bond" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
-		"interface " + bondInterface,
-		"evpn mh es-id " + frr.vniToEsi(vni),
-		"evpn mh es-df-pref " + strconv.Itoa(rand.Intn(32767)),
-		"exit", // interface bond100
 		"interface " + ospfInterface,
 		"no ospf cost",
 		"exit", // interface,
@@ -90,19 +84,23 @@ func (frr *FRRClient) Advertise(vni uint64) error {
 	return nil
 }
 
+func (frr *FRRClient) SendGratuitousArp(vni uint64) error {
+	log.Info().Uint64("vni", vni).Msg("sending gratuitous arp")
+	if MockFRR {
+		return nil
+	}
+	_, err := exec.Command("arping", "-c", "3", "-A", "-I", "br100", "192.168.2.1").Output()
+	return err
+}
+
 func (frr *FRRClient) Withdraw(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("withdrawing")
 	if MockFRR {
 		return nil
 	}
 	ospfInterface := "veth" + strconv.FormatUint(vni, 10) + "p"
-	bondInterface := "bond" + strconv.FormatUint(vni, 10)
 	out, err := frr.vtysh([]string{
 		"configure terminal",
-		"interface " + bondInterface,
-		"no evpn mh es-id",
-		"no evpn mh es-df-pref",
-		"exit", // interface bond100
 		"interface " + ospfInterface,
 		"ospf cost 65535",
 		"exit", // interface,
@@ -123,5 +121,4 @@ func (frr *FRRClient) Withdraw(vni uint64) error {
 		return errors.New("vtysh returned " + string(out))
 	}
 	return nil
-
 }
