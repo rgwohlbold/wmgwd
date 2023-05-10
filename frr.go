@@ -27,8 +27,6 @@ func NewFRRClient() *FRRClient {
 	return &FRRClient{}
 }
 
-func (frr *FRRClient) Close() {}
-
 func (frr *FRRClient) vtysh(commands []string) error {
 	if MockFRR {
 		return nil
