@@ -75,14 +75,15 @@ func main() {
 	timerChan := make(chan TimerEvent)
 
 	wg := new(sync.WaitGroup)
+	timerEventIngestor := NewTimerEventIngestor()
 	RunEventIngestor[VniEvent](ctx, node, VniEventIngestor{}, vniChan, wg)
-	RunEventIngestor[TimerEvent](ctx, node, TimerEventIngestor{}, timerChan, wg)
+	RunEventIngestor[TimerEvent](ctx, node, timerEventIngestor, timerChan, wg)
 	RunEventIngestor[NewNodeEvent](ctx, node, NewNodeEventIngestor{}, newNodeChan, wg)
 	RunEventIngestor[LeaderState](ctx, node, LeaderEventIngestor{}, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {
-		ProcessEvents(ctx, node, vniChan, leaderChan, newNodeChan, timerChan, vnis)
+		ProcessEvents(ctx, timerEventIngestor, node, vniChan, leaderChan, newNodeChan, timerChan, vnis)
 		wg.Done()
 	}()
 

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *FRRClient, db *Database) error {
+func ProcessVniEvent(timerEventIngestor TimerEventIngestor, node string, leaderState LeaderState, event VniEvent, frr *FRRClient, db *Database) error {
 	if event.State.Type == Unassigned {
 		if leaderState.Node == node {
 			return db.setVniState(event.Vni, VniState{
@@ -25,12 +25,12 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 			if err != nil {
 				return errors.Wrap(err, "could not advertise evpn")
 			}
-			QueueTimerEvent(TimerEvent{Func: func() error {
+			timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
 				err = frr.AdvertiseOspf(event.Vni)
 				if err != nil {
 					return errors.Wrap(err, "could not advertise ospf")
 				}
-				QueueTimerEvent(TimerEvent{Func: func() error {
+				timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
 					return db.setVniState(event.Vni, VniState{
 						Type:    MigrationOspfAdvertised,
 						Current: event.State.Current,
@@ -89,7 +89,7 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 			if err != nil {
 				return errors.Wrap(err, "could not send gratuitous arp")
 			}
-			QueueTimerEvent(TimerEvent{Func: func() error {
+			timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
 				return db.setVniState(event.Vni, VniState{
 					Type:    MigrationGratuitousArpSent,
 					Current: event.State.Current,
@@ -122,12 +122,12 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 			if err != nil {
 				return errors.Wrap(err, "could not enable arp")
 			}
-			QueueTimerEvent(TimerEvent{Func: func() error {
+			timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
 				err = frr.SendGratuitousArp(event.Vni)
 				if err != nil {
 					return errors.Wrap(err, "could not send gratuitous arp")
 				}
-				QueueTimerEvent(TimerEvent{Func: func() error {
+				timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
 					return db.setVniState(event.Vni, VniState{
 						Type:    Idle,
 						Current: node,
@@ -139,7 +139,7 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 	}
 	return nil
 }
-func ProcessEvents(ctx context.Context, node string, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, vnis []uint64) {
+func ProcessEvents(ctx context.Context, timerEventIngestor TimerEventIngestor, node string, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent, vnis []uint64) {
 	db, err := NewDatabase(node)
 	if err != nil {
 		log.Fatal().Err(err).Msg("event-processor: failed to connect to database")
@@ -155,7 +155,7 @@ func ProcessEvents(ctx context.Context, node string, vniChan chan VniEvent, lead
 			log.Debug().Msg("event-processor: context done")
 			return
 		case event := <-vniChan:
-			err := ProcessVniEvent(node, leader, event, frr, db)
+			err := ProcessVniEvent(timerEventIngestor, node, leader, event, frr, db)
 			if err != nil {
 				log.Fatal().Err(err).Msg("event-processor: failed to process event")
 			}
