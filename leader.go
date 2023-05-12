@@ -13,11 +13,11 @@ type LeaderState struct {
 
 type LeaderEventIngestor struct{}
 
-func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan chan<- LeaderState, setupChan chan<- struct{}) {
+func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan chan<- LeaderState, setupChan chan<- struct{}) {
 	// we will never miss a relevant leader event: we are followers first and always observe ourselves being elected
 	setupChan <- struct{}{}
 
-	db, err := NewDatabase(node)
+	db, err := NewDatabase(d.Config)
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
 	}
@@ -40,7 +40,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 	election := concurrency.NewElection(session, electionKey)
 	for {
 		log.Info().Msg("leader-election: campaigning")
-		err = election.Campaign(ctx, node)
+		err = election.Campaign(ctx, d.Config.Node)
 		if err != nil {
 			if err == context.Canceled {
 				goto end
@@ -48,16 +48,16 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan
 			log.Fatal().Err(err).Msg("leader-election: campaign failed")
 		}
 		log.Info().Str("key", election.Key()).Msg("leader-election: got elected")
-		leaderChan <- LeaderState{Node: node, Key: election.Key()}
+		leaderChan <- LeaderState{Node: d.Config.Node, Key: election.Key()}
 		observeChan := election.Observe(ctx)
 		for {
 			select {
 			case value := <-observeChan:
-				if string(value.Kvs[0].Value) == node {
+				if string(value.Kvs[0].Value) == d.Config.Node {
 					continue
 				}
 				log.Info().Msg("leader-election: lost election")
-				leaderChan <- LeaderState{Node: node, Key: election.Key()}
+				leaderChan <- LeaderState{Node: d.Config.Node, Key: election.Key()}
 			case <-ctx.Done():
 				goto end
 			}

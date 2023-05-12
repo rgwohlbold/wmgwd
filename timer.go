@@ -21,6 +21,7 @@ type TimerEvent struct {
 func NewTimerEventIngestor() TimerEventIngestor {
 	return TimerEventIngestor{
 		newTimerChan: make(chan chan TimerEvent),
+		lock:         &sync.Mutex{},
 	}
 }
 
@@ -36,7 +37,7 @@ func (i TimerEventIngestor) Enqueue(event TimerEvent) {
 	i.newTimerChan <- vniChan
 }
 
-func (i TimerEventIngestor) Ingest(ctx context.Context, _ string, eventChan chan<- TimerEvent, setupChan chan<- struct{}) {
+func (i TimerEventIngestor) Ingest(ctx context.Context, _ *Daemon, eventChan chan<- TimerEvent, setupChan chan<- struct{}) {
 	// the ingestor listens for events instantly, since newTimerChan is blocking
 	setupChan <- struct{}{}
 

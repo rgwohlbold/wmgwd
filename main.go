@@ -2,29 +2,12 @@ package main
 
 import (
 	"context"
-	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
 	"runtime"
-	"sync"
 )
-
-func RegisterNode(node string) error {
-	db, err := NewDatabase(node)
-	if err != nil {
-		return errors.Wrap(err, "could not open database")
-	}
-	defer db.Close()
-
-	err = db.Register(node)
-	if err != nil {
-		return errors.Wrap(err, "could not register node")
-	}
-	log.Info().Msg("registered node")
-	return nil
-}
 
 func main() {
 	runtime.GOMAXPROCS(2) // vtysh and go stuff
@@ -41,26 +24,6 @@ func main() {
 	if len(os.Args) != 2 {
 		log.Fatal().Msg("usage: wmgwd <node>")
 	}
-	node := os.Args[1]
-
-	frr := NewFRRClient()
-
-	vnis := []uint64{100}
-	for _, vni := range vnis {
-		err = frr.WithdrawEvpn(vni)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to withdraw")
-		}
-		err = frr.WithdrawOspf(vni)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to withdraw")
-		}
-		err = frr.DisableArp(vni)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to disable arp")
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		signalChan := make(chan os.Signal)
@@ -68,40 +31,11 @@ func main() {
 		<-signalChan
 		cancel()
 	}()
-
-	leaderChan := make(chan LeaderState)
-	vniChan := make(chan VniEvent, len(vnis))
-	newNodeChan := make(chan NewNodeEvent)
-	timerChan := make(chan TimerEvent)
-
-	wg := new(sync.WaitGroup)
-	timerEventIngestor := NewTimerEventIngestor()
-	RunEventIngestor[VniEvent](ctx, node, VniEventIngestor{}, vniChan, wg)
-	RunEventIngestor[TimerEvent](ctx, node, timerEventIngestor, timerChan, wg)
-	RunEventIngestor[NewNodeEvent](ctx, node, NewNodeEventIngestor{}, newNodeChan, wg)
-	RunEventIngestor[LeaderState](ctx, node, LeaderEventIngestor{}, leaderChan, wg)
-
-	wg.Add(1)
-	go func() {
-		ProcessEvents(ctx, timerEventIngestor, node, vniChan, leaderChan, newNodeChan, timerChan, vnis)
-		wg.Done()
-	}()
-
-	err = RegisterNode(node)
+	err = NewDaemon(Configuration{
+		Node: os.Args[1],
+		Vnis: []uint64{100},
+	}, NewSystemNetworkStrategy()).Run(ctx)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to register node")
-	}
-
-	wg.Wait()
-	log.Info().Msg("exiting, withdrawing everything")
-	for _, vni := range vnis {
-		err = frr.WithdrawEvpn(vni)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to withdraw")
-		}
-		err = frr.WithdrawOspf(vni)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to withdraw")
-		}
+		log.Fatal().Err(err).Msg("failed to run daemon")
 	}
 }

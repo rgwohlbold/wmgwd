@@ -15,24 +15,19 @@ import (
 	"sync"
 )
 
-const FRRAutonomousSystem = 65000
-const MockFRR = false
-
-var mutex sync.Mutex
-
-type FRRClient struct {
+type SystemNetworkStrategy struct {
+	lock *sync.Mutex
 }
 
-func NewFRRClient() *FRRClient {
-	return &FRRClient{}
-}
-
-func (frr *FRRClient) vtysh(commands []string) error {
-	if MockFRR {
-		return nil
+func NewSystemNetworkStrategy() *SystemNetworkStrategy {
+	return &SystemNetworkStrategy{
+		lock: &sync.Mutex{},
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
+}
+
+func (s *SystemNetworkStrategy) vtysh(commands []string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
 	input := make([]string, 2*len(commands))
 	for i, c := range commands {
@@ -51,7 +46,7 @@ func (frr *FRRClient) vtysh(commands []string) error {
 	return nil
 }
 
-func (frr *FRRClient) vniToEsi(vni uint64) string {
+func (s *SystemNetworkStrategy) vniToEsi(vni uint64) string {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, vni)
 	esi := "00:00"
@@ -62,9 +57,9 @@ func (frr *FRRClient) vniToEsi(vni uint64) string {
 	return esi
 }
 
-func (frr *FRRClient) AdvertiseEvpn(vni uint64) error {
+func (s *SystemNetworkStrategy) AdvertiseEvpn(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("advertising evpn")
-	return frr.vtysh([]string{
+	return s.vtysh([]string{
 		"configure terminal",
 		"route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
 		"match evpn vni " + strconv.FormatUint(vni, 10),
@@ -75,9 +70,9 @@ func (frr *FRRClient) AdvertiseEvpn(vni uint64) error {
 	})
 }
 
-func (frr *FRRClient) WithdrawEvpn(vni uint64) error {
+func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("withdrawing evpn")
-	return frr.vtysh([]string{
+	return s.vtysh([]string{
 		"configure terminal",
 		"no route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
 		"exit", // configure terminal
@@ -86,10 +81,10 @@ func (frr *FRRClient) WithdrawEvpn(vni uint64) error {
 	})
 }
 
-func (frr *FRRClient) AdvertiseOspf(vni uint64) error {
+func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
 	log.Info().Msg("advertising ospf")
 	ospfInterface := "br" + strconv.FormatUint(vni, 10)
-	return frr.vtysh([]string{
+	return s.vtysh([]string{
 		"configure terminal",
 		"interface " + ospfInterface,
 		"no ospf cost",
@@ -99,10 +94,10 @@ func (frr *FRRClient) AdvertiseOspf(vni uint64) error {
 	})
 }
 
-func (frr *FRRClient) WithdrawOspf(vni uint64) error {
+func (s *SystemNetworkStrategy) WithdrawOspf(vni uint64) error {
 	log.Info().Msg("withdrawing ospf")
 	ospfInterface := "br" + strconv.FormatUint(vni, 10)
-	return frr.vtysh([]string{
+	return s.vtysh([]string{
 		"configure terminal",
 		"interface " + ospfInterface,
 		"ospf cost 65535",
@@ -117,19 +112,16 @@ func writeSysctl(key string, value string) error {
 	return os.WriteFile("/proc/sys/"+path, []byte(value), 0644)
 }
 
-func (frr *FRRClient) EnableArp(vni uint64) error {
+func (s *SystemNetworkStrategy) EnableArp(vni uint64) error {
 	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "0")
 }
 
-func (frr *FRRClient) DisableArp(vni uint64) error {
+func (s *SystemNetworkStrategy) DisableArp(vni uint64) error {
 	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "3")
 }
 
-func (frr *FRRClient) SendGratuitousArp(vni uint64) error {
+func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("sending gratuitous arp")
-	if MockFRR {
-		return nil
-	}
 	iface, err := net.InterfaceByName("br" + strconv.FormatUint(vni, 10))
 	if err != nil {
 		return errors.Wrap(err, "could not get interface")

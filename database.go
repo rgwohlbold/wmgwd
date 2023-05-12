@@ -52,7 +52,7 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 	return lease, nil
 }
 
-func NewDatabase(node string) (*Database, error) {
+func NewDatabase(config Configuration) (*Database, error) {
 	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
@@ -79,7 +79,7 @@ func NewDatabase(node string) (*Database, error) {
 		}
 	}()
 
-	return &Database{client, node, lease.ID, cancel}, nil
+	return &Database{client, config.Node, lease.ID, cancel}, nil
 }
 
 func (db *Database) Close() error {
