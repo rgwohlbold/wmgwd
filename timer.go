@@ -12,8 +12,6 @@ type TimerEventIngestor struct {
 	lock         *sync.Mutex
 }
 
-const MigrationTimeout = 5 * time.Second
-
 type TimerEvent struct {
 	Func func() error
 }
@@ -25,13 +23,13 @@ func NewTimerEventIngestor() TimerEventIngestor {
 	}
 }
 
-func (i TimerEventIngestor) Enqueue(event TimerEvent) {
+func (i TimerEventIngestor) Enqueue(timeout time.Duration, event TimerEvent) {
 	i.lock.Lock()
 	defer i.lock.Unlock()
 
 	vniChan := make(chan TimerEvent)
 	go func() {
-		<-time.After(MigrationTimeout)
+		<-time.After(timeout)
 		vniChan <- event
 	}()
 	i.newTimerChan <- vniChan

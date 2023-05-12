@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"time"
 )
 
 func main() {
@@ -32,8 +33,9 @@ func main() {
 		cancel()
 	}()
 	err = NewDaemon(Configuration{
-		Node: os.Args[1],
-		Vnis: []uint64{100},
+		Node:             os.Args[1],
+		Vnis:             []uint64{100},
+		MigrationTimeout: 5 * time.Second,
 	}, NewSystemNetworkStrategy()).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")

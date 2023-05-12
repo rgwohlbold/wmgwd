@@ -12,8 +12,9 @@ import (
 )
 
 type Configuration struct {
-	Node string
-	Vnis []uint64
+	Node             string
+	Vnis             []uint64
+	MigrationTimeout time.Duration
 }
 
 type Daemon struct {
@@ -145,12 +146,12 @@ func (d *Daemon) ProcessVniEvent(leaderState LeaderState, event VniEvent, db *Da
 			if err != nil {
 				return errors.Wrap(err, "could not advertise evpn")
 			}
-			d.timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
+			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 				err = d.networkStrategy.AdvertiseOspf(event.Vni)
 				if err != nil {
 					return errors.Wrap(err, "could not advertise ospf")
 				}
-				d.timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
+				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 					return db.setVniState(event.Vni, VniState{
 						Type:    MigrationOspfAdvertised,
 						Current: event.State.Current,
@@ -166,18 +167,13 @@ func (d *Daemon) ProcessVniEvent(leaderState LeaderState, event VniEvent, db *Da
 			if err != nil {
 				return errors.Wrap(err, "could not withdraw ospf")
 			}
-			go func() {
-				time.Sleep(MigrationTimeout)
-				err = db.setVniState(event.Vni, VniState{
+			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
+				return db.setVniState(event.Vni, VniState{
 					Type:    MigrationOspfWithdrawn,
 					Current: event.State.Current,
 					Next:    event.State.Next,
 				}, event.State, leaderState)
-				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
-				}
-			}()
-
+			}})
 		}
 	} else if event.State.Type == MigrationOspfWithdrawn {
 		if event.State.Next == d.Config.Node {
@@ -209,7 +205,7 @@ func (d *Daemon) ProcessVniEvent(leaderState LeaderState, event VniEvent, db *Da
 			if err != nil {
 				return errors.Wrap(err, "could not send gratuitous arp")
 			}
-			d.timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
+			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 				return db.setVniState(event.Vni, VniState{
 					Type:    MigrationGratuitousArpSent,
 					Current: event.State.Current,
@@ -242,12 +238,12 @@ func (d *Daemon) ProcessVniEvent(leaderState LeaderState, event VniEvent, db *Da
 			if err != nil {
 				return errors.Wrap(err, "could not enable arp")
 			}
-			d.timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
+			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 				err = d.networkStrategy.SendGratuitousArp(event.Vni)
 				if err != nil {
 					return errors.Wrap(err, "could not send gratuitous arp")
 				}
-				d.timerEventIngestor.Enqueue(TimerEvent{Func: func() error {
+				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 					return db.setVniState(event.Vni, VniState{
 						Type:    Idle,
 						Current: d.Config.Node,
