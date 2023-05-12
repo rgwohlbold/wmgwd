@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
 	"strconv"
@@ -90,7 +91,7 @@ func (db *Database) Register(node string) error {
 	defer cancel()
 
 	_, err := db.client.Put(ctx, EtcdNodePrefix+node, node, v3.WithLease(db.lease))
-	return err
+	return errors.Wrap(err, "could not put to etcd")
 }
 
 func stateTypeToString(state VniStateType) string {
@@ -133,12 +134,12 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 
 	serializedState, err := json.Marshal(state)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not marshal state")
 	}
 
 	serializedOldState, err := json.Marshal(oldState)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not marshal old state")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
@@ -154,7 +155,10 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
 	}
 	_, err = db.client.Txn(ctx).If(conditions...).Then(v3.OpPut(key, string(serializedState), v3.WithLease(db.lease))).Commit()
-	return err
+	if err != nil {
+		return errors.Wrap(err, "could not put to etcd")
+	}
+	return nil
 }
 
 func (db *Database) GetState(vni uint64) (VniState, error) {

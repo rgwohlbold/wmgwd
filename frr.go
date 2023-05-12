@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"github.com/mdlayher/arp"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	"net"
 	"net/netip"
@@ -43,7 +43,7 @@ func (frr *FRRClient) vtysh(commands []string) error {
 	output, err := exec.Command("vtysh", input...).Output()
 	log.Debug().Str("output", string(output)).Msg("vtysh")
 	if err != nil {
-		return err
+		return errors.Wrap(err, "vtysh failed")
 	}
 	if !strings.Contains(string(output), "[OK]\n") {
 		return errors.New("vtysh returned " + string(output))
@@ -127,28 +127,27 @@ func (frr *FRRClient) DisableArp(vni uint64) error {
 
 func (frr *FRRClient) SendGratuitousArp(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("sending gratuitous arp")
-	// TODO: this blocks
 	if MockFRR {
 		return nil
 	}
 	iface, err := net.InterfaceByName("br" + strconv.FormatUint(vni, 10))
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not get interface")
 	}
 	client, err := arp.Dial(iface)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not dial arp")
 	}
 	defer client.Close()
 
 	addrs, err := iface.Addrs()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not get interface addresses")
 	}
 	for _, addr := range addrs {
 		ip, _, err := net.ParseCIDR(addr.String())
 		if err != nil {
-			return err
+			return errors.Wrap(err, "could not parse cidr")
 		}
 		if ip.To4() != nil {
 			nip, ok := netip.AddrFromSlice(ip.To4())
@@ -157,11 +156,11 @@ func (frr *FRRClient) SendGratuitousArp(vni uint64) error {
 			}
 			packet, err := arp.NewPacket(arp.OperationReply, iface.HardwareAddr, nip, net.HardwareAddr{0, 0, 0, 0, 0, 0}, nip)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not create arp packet")
 			}
 			err = client.WriteTo(packet, net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not write arp packet")
 			}
 		}
 	}

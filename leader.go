@@ -14,7 +14,7 @@ type LeaderState struct {
 type LeaderEventIngestor struct{}
 
 func (_ LeaderEventIngestor) Ingest(ctx context.Context, node string, leaderChan chan<- LeaderState, setupChan chan<- struct{}) {
-	// we will never miss a relevant leader event: we are followers first and always observe us being elected
+	// we will never miss a relevant leader event: we are followers first and always observe ourselves being elected
 	setupChan <- struct{}{}
 
 	db, err := NewDatabase(node)

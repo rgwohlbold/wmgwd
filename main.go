@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"os"
@@ -13,20 +14,20 @@ import (
 func RegisterNode(node string) error {
 	db, err := NewDatabase(node)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not open database")
 	}
 	defer db.Close()
 
 	err = db.Register(node)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not register node")
 	}
 	log.Info().Msg("registered node")
 	return nil
 }
 
 func main() {
-	runtime.GOMAXPROCS(3) // vtysh, frr and go stuff
+	runtime.GOMAXPROCS(2) // vtysh and go stuff
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	fileInfo, err := os.Stderr.Stat()
 	if err != nil {

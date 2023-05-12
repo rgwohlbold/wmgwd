@@ -12,21 +12,20 @@ type TimerEventIngestor struct{}
 const MigrationTimeout = 5 * time.Second
 
 type TimerEvent struct {
-	Vni   uint64
-	State VniState
+	Func func() error
 }
 
 var lock sync.Mutex
 var newTimerChan = make(chan chan TimerEvent)
 
-func AddMigrationTimer(vni uint64) {
+func QueueTimerEvent(event TimerEvent) {
 	lock.Lock()
 	defer lock.Unlock()
 
 	vniChan := make(chan TimerEvent)
 	go func() {
 		<-time.After(MigrationTimeout)
-		vniChan <- TimerEvent{Vni: vni}
+		vniChan <- event
 	}()
 	newTimerChan <- vniChan
 }

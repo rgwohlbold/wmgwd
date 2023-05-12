@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
@@ -22,30 +23,28 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		if node == event.State.Next {
 			err := frr.AdvertiseEvpn(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not advertise evpn")
 			}
-			go func() {
-				time.Sleep(MigrationTimeout)
+			QueueTimerEvent(TimerEvent{Func: func() error {
 				err = frr.AdvertiseOspf(event.Vni)
 				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to advertise OSPF")
+					return errors.Wrap(err, "could not advertise ospf")
 				}
-				time.Sleep(MigrationTimeout)
-				err = db.setVniState(event.Vni, VniState{
-					Type:    MigrationOspfAdvertised,
-					Current: event.State.Current,
-					Next:    event.State.Next,
-				}, event.State, leaderState)
-				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
-				}
-			}()
+				QueueTimerEvent(TimerEvent{Func: func() error {
+					return db.setVniState(event.Vni, VniState{
+						Type:    MigrationOspfAdvertised,
+						Current: event.State.Current,
+						Next:    event.State.Next,
+					}, event.State, leaderState)
+				}})
+				return nil
+			}})
 		}
 	} else if event.State.Type == MigrationOspfAdvertised {
 		if node == event.State.Current {
 			err := frr.WithdrawOspf(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not withdraw ospf")
 			}
 			go func() {
 				time.Sleep(MigrationTimeout)
@@ -64,7 +63,7 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		if node == event.State.Next {
 			err := frr.EnableArp(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not enable arp")
 			}
 			return db.setVniState(event.Vni, VniState{
 				Type:    MigrationArpEnabled,
@@ -76,7 +75,7 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		if node == event.State.Current {
 			err := frr.DisableArp(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not disable arp")
 			}
 			return db.setVniState(event.Vni, VniState{
 				Type:    MigrationArpDisabled,
@@ -88,25 +87,21 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		if node == event.State.Next {
 			err := frr.SendGratuitousArp(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not send gratuitous arp")
 			}
-			go func() {
-				time.Sleep(MigrationTimeout)
-				err = db.setVniState(event.Vni, VniState{
+			QueueTimerEvent(TimerEvent{Func: func() error {
+				return db.setVniState(event.Vni, VniState{
 					Type:    MigrationGratuitousArpSent,
 					Current: event.State.Current,
 					Next:    event.State.Next,
 				}, event.State, leaderState)
-				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
-				}
-			}()
+			}})
 		}
 	} else if event.State.Type == MigrationGratuitousArpSent {
 		if node == event.State.Current {
 			err := frr.WithdrawEvpn(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not withdraw evpn")
 			}
 			return db.setVniState(event.Vni, VniState{
 				Type:    Idle,
@@ -117,31 +112,29 @@ func ProcessVniEvent(node string, leaderState LeaderState, event VniEvent, frr *
 		if node == event.State.Next {
 			err := frr.AdvertiseEvpn(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not advertise evpn")
 			}
 			err = frr.AdvertiseOspf(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not advertise ospf")
 			}
 			err = frr.EnableArp(event.Vni)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not enable arp")
 			}
-			go func() {
-				time.Sleep(MigrationTimeout)
+			QueueTimerEvent(TimerEvent{Func: func() error {
 				err = frr.SendGratuitousArp(event.Vni)
 				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to send gratuitous arp")
+					return errors.Wrap(err, "could not send gratuitous arp")
 				}
-				time.Sleep(MigrationTimeout)
-				err = db.setVniState(event.Vni, VniState{
-					Type:    Idle,
-					Current: node,
-				}, event.State, leaderState)
-				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
-				}
-			}()
+				QueueTimerEvent(TimerEvent{Func: func() error {
+					return db.setVniState(event.Vni, VniState{
+						Type:    Idle,
+						Current: node,
+					}, event.State, leaderState)
+				}})
+				return nil
+			}})
 		}
 	}
 	return nil
@@ -196,30 +189,15 @@ func ProcessEvents(ctx context.Context, node string, vniChan chan VniEvent, lead
 					log.Fatal().Err(err).Msg("event-processor: failed to set migration decided")
 				}
 			}
-			//case newNodeEvent := <-newNodeChan:
-			//	if leader.Node == node && node != newNodeEvent.Node {
-			//		state, err := db.GetState(vnis[0])
-			//		if err != nil {
-			//			log.Fatal().Err(err).Msg("event-processor: failed to get state")
-			//		}
-			//		err = db.setVniState(vnis[0], VniState{
-			//			Type:    MigrationDecided,
-			//			Current: node,
-			//			Next:    newNodeEvent.Node,
-			//		}, state, leader)
-			//		if err != nil {
-			//			log.Fatal().Err(err).Msg("event-processor: failed to set migration decided")
-			//		}
-			//	}
-			//case timerEvent := <-timerChan:
-			//	err = db.setVniState(timerEvent.Vni, VniState{
-			//		Type:    Idle,
-			//		Current: node,
-			//		Next:    "",
-			//	}, timerEvent.State, leader)
-			//	if err != nil {
-			//		log.Fatal().Err(err).Msg("event-processor: failed to set vni state")
-			//	}
+		case newNodeEvent := <-newNodeChan:
+			if leader.Node == node && node != newNodeEvent.Node {
+				log.Info().Str("node", newNodeEvent.Node).Msg("event-processor: new node")
+			}
+		case timerEvent := <-timerChan:
+			err = timerEvent.Func()
+			if err != nil {
+				log.Fatal().Err(err).Msg("event-processor: failed to execute timer event")
+			}
 		}
 	}
 }
