@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-const EtcdTimeout = 1 * time.Second
-const EtcdLeaseTTL = 5
+const EtcdTimeout = 10000 * time.Second
+const EtcdLeaseTTL = 30
 
 const EtcdVniPrefix = "/wmgwd/vni/"
 

@@ -64,7 +64,6 @@ func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afte
 		eventProcessor: daemon.eventProcessor,
 		afterVniEvent:  afterVniEvent,
 	}
-	wg.Add(1)
 	go func() {
 		defer cancel()
 		err := daemon.Run(ctx)
@@ -80,6 +79,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	assertHit := false
 	var wg sync.WaitGroup
+	wg.Add(1)
 	RunTestDaemon(t, &wg, AssignSelf{}, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
@@ -129,6 +129,7 @@ func TestTwoDaemonFailover(t *testing.T) {
 		return VerdictContinue
 	}
 	var wg sync.WaitGroup
+	wg.Add(2)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
@@ -166,6 +167,7 @@ func TestCrashFailoverDecided(t *testing.T) {
 		return VerdictContinue
 	}
 	var wg sync.WaitGroup
+	wg.Add(3)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
