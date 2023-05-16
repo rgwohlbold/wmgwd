@@ -236,9 +236,9 @@ func (p EventProcessorWrapper) Process(ctx context.Context, d *Daemon, vniChan c
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
+		leaderState := <-leaderChan
+		internalLeaderChan <- leaderState
 		for {
-			leaderState := <-leaderChan
-			internalLeaderChan <- leaderState
 			select {
 			case <-ctx.Done():
 				return
