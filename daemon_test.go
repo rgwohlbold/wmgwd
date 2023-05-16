@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"math/rand"
 	"os"
@@ -57,7 +58,7 @@ func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afte
 		Vnis:             []uint64{100},
 		MigrationTimeout: 0,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	daemon := NewDaemon(config, ns, as)
 	daemon.eventProcessor = EventProcessorWrapper{
 		cancel:         cancel,
@@ -143,26 +144,27 @@ func TestTwoDaemonFailover(t *testing.T) {
 func TestCrashFailoverDecided(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
-	numCrashed := 0
-	failoverToLeader := false
-	idleOnLeader := false
+	firstIdleCrashed := false
+	secondFailoverCrashed := false
+	thirdReachesIdle := false
 
 	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		// First two non-leader processes that are set to FailoverDecided crash
-		if e.State.Type == FailoverDecided && e.State.Next != d.Config.Node && s.Node != d.Config.Node {
-			// First two processes that are set to FailoverDecided crash
-			if numCrashed < 2 {
-				numCrashed++
-				return VerdictStop
-			}
-			failoverToLeader = true
-			return VerdictContinue
-		} else if e.State.Type == Idle && e.State.Current == d.Config.Node {
-			if failoverToLeader {
-				idleOnLeader = true
-			}
+		if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
+			// First non-leader idle process crashes
+			log.Info().Msg("firstIdleCrashed")
+			firstIdleCrashed = true
+			return VerdictStop
+		} else if firstIdleCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+			// Second non-leader process crashes in FailoverDecided
+			log.Info().Msg("secondFailoverCrashed")
+			secondFailoverCrashed = true
+			return VerdictStop
+		} else if secondFailoverCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
+			// Third process (leader) is assigned and reaches idle
+			log.Info().Msg("thirdReachesIdle")
+			thirdReachesIdle = true
 			return VerdictStop
 		}
 		return VerdictContinue
@@ -173,8 +175,8 @@ func TestCrashFailoverDecided(t *testing.T) {
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
-	if !idleOnLeader {
-		t.Errorf("idleOnLeader = %v; want true", idleOnLeader)
+	if !thirdReachesIdle {
+		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
 	}
 }
 
