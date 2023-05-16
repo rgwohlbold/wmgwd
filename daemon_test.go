@@ -132,6 +132,37 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 }
 
+// TestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided, the VNI will fail over to the next node.
+func TestCrashFailoverDecided(t *testing.T) {
+	WipeDatabase(t)
+	crashed := false
+	reachedSecondFailover := false
+	reachedIdle := false
+
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
+		if e.State.Type == FailoverDecided && e.State.Next == d.Config.Node {
+			// First process that is set to FailoverDecided crashes
+			if !crashed {
+				crashed = true
+				return VerdictStop
+			}
+			reachedSecondFailover = true
+			return VerdictContinue
+		} else if e.State.Type == Idle && e.State.Current == d.Config.Node {
+			reachedIdle = true
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
+	var wg sync.WaitGroup
+	RunTestDaemon(t, &wg, afterVniFunc)
+	RunTestDaemon(t, &wg, afterVniFunc)
+	wg.Wait()
+	if !crashed || !reachedSecondFailover || !reachedIdle {
+		t.Errorf("crashed = %v; reachedSecondFailover = %v; reachedIdle = %v; want true, true, true", crashed, reachedSecondFailover, reachedIdle)
+	}
+}
+
 func TestMain(m *testing.M) {
 	cmd := exec.Command("/home/richard/progs/etcd/bin/etcd")
 	err := cmd.Start()

@@ -81,7 +81,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	timerChan := make(chan TimerEvent)
 
 	wg := new(sync.WaitGroup)
-	//timerEventIngestor := NewTimerEventIngestor()
 	runEventIngestor[VniEvent](ctx, d, d.vniEventIngestor, vniChan, wg)
 	runEventIngestor[TimerEvent](ctx, d, d.timerEventIngestor, timerChan, wg)
 	runEventIngestor[NewNodeEvent](ctx, d, d.newNodeEventIngestor, newNodeChan, wg)

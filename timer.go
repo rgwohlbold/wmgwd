@@ -18,7 +18,7 @@ type TimerEvent struct {
 
 func NewTimerEventIngestor() TimerEventIngestor {
 	return TimerEventIngestor{
-		newTimerChan: make(chan chan TimerEvent),
+		newTimerChan: make(chan chan TimerEvent, 1), // capacity 1 to avoid blocking, TimerEventIngestor may have exited before last enqueue
 		lock:         &sync.Mutex{},
 	}
 }
