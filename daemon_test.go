@@ -49,15 +49,16 @@ func RandStringRunes(n int) string {
 	return string(b)
 }
 
-func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, afterVniEvent func(*Daemon, VniEvent) Verdict) {
+func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) {
 	ns := NewMockNetworkStrategy()
 	config := Configuration{
 		Node:             "node-test-" + RandStringRunes(10),
+		ScanInterval:     1 * time.Second,
 		Vnis:             []uint64{100},
 		MigrationTimeout: 0,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	daemon := NewDaemon(config, ns)
+	daemon := NewDaemon(config, ns, as)
 	daemon.eventProcessor = EventProcessorWrapper{
 		cancel:         cancel,
 		eventProcessor: daemon.eventProcessor,
@@ -79,7 +80,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	assertHit := false
 	var wg sync.WaitGroup
-	RunTestDaemon(t, &wg, func(d *Daemon, e VniEvent) Verdict {
+	RunTestDaemon(t, &wg, AssignSelf{}, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
@@ -109,57 +110,68 @@ func TestSingleDaemonFailover(t *testing.T) {
 
 func TestTwoDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
-	numIdle := 0
-	numFailover := 0
+	var lock sync.Mutex
+	crashed := false
+	recovered := false
 
-	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
-		if e.State.Type == Idle && e.State.Current == d.Config.Node {
+	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		// Crash non-leader idle process
+		if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
-			numIdle++
+			crashed = true
 			return VerdictStop
-		} else if e.State.Type == FailoverDecided && e.State.Next == d.Config.Node {
-			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, false, false, false, 0)
-			numFailover++
+		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node && crashed {
+			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
+			recovered = true
 		}
 		return VerdictContinue
 	}
 	var wg sync.WaitGroup
-	RunTestDaemon(t, &wg, afterVniFunc)
-	RunTestDaemon(t, &wg, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
-	if numIdle != 2 && numFailover != 2 {
-		t.Errorf("numIdle = %v; numFailover = %v; want 2, 2", numIdle, numFailover)
+	if !recovered {
+		t.Errorf("recovered = %v; want true", recovered)
 	}
 }
 
 // TestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided, the VNI will fail over to the next node.
 func TestCrashFailoverDecided(t *testing.T) {
 	WipeDatabase(t)
-	crashed := false
-	reachedSecondFailover := false
-	reachedIdle := false
+	var lock sync.Mutex
+	numCrashed := 0
+	failoverToLeader := false
+	idleOnLeader := false
 
-	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
-		if e.State.Type == FailoverDecided && e.State.Next == d.Config.Node {
-			// First process that is set to FailoverDecided crashes
-			if !crashed {
-				crashed = true
+	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		// First two non-leader processes that are set to FailoverDecided crash
+		if e.State.Type == FailoverDecided && e.State.Next != d.Config.Node && s.Node != d.Config.Node {
+			// First two processes that are set to FailoverDecided crash
+			if numCrashed < 2 {
+				numCrashed++
 				return VerdictStop
 			}
-			reachedSecondFailover = true
+			failoverToLeader = true
 			return VerdictContinue
 		} else if e.State.Type == Idle && e.State.Current == d.Config.Node {
-			reachedIdle = true
+			if failoverToLeader {
+				idleOnLeader = true
+			}
 			return VerdictStop
 		}
 		return VerdictContinue
 	}
 	var wg sync.WaitGroup
-	RunTestDaemon(t, &wg, afterVniFunc)
-	RunTestDaemon(t, &wg, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
-	if !crashed || !reachedSecondFailover || !reachedIdle {
-		t.Errorf("crashed = %v; reachedSecondFailover = %v; reachedIdle = %v; want true, true, true", crashed, reachedSecondFailover, reachedIdle)
+	if !idleOnLeader {
+		t.Errorf("idleOnLeader = %v; want true", idleOnLeader)
 	}
 }
 

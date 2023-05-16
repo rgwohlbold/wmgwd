@@ -12,10 +12,12 @@ type Configuration struct {
 	Node             string
 	Vnis             []uint64
 	MigrationTimeout time.Duration
+	ScanInterval     time.Duration
 }
 
 type Daemon struct {
 	Config               Configuration
+	assignmentStrategy   AssignmentStrategy
 	networkStrategy      NetworkStrategy
 	vniEventIngestor     VniEventIngestor
 	timerEventIngestor   TimerEventIngestor
@@ -24,10 +26,11 @@ type Daemon struct {
 	eventProcessor       EventProcessor
 }
 
-func NewDaemon(config Configuration, networkStrategy NetworkStrategy) *Daemon {
+func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) *Daemon {
 	return &Daemon{
 		Config:               config,
-		networkStrategy:      networkStrategy,
+		assignmentStrategy:   as,
+		networkStrategy:      ns,
 		vniEventIngestor:     VniEventIngestor{},
 		timerEventIngestor:   NewTimerEventIngestor(),
 		newNodeEventIngestor: NewNodeEventIngestor{},

@@ -33,10 +33,11 @@ func main() {
 		cancel()
 	}()
 	err = NewDaemon(Configuration{
+		ScanInterval:     1 * time.Second,
 		Node:             os.Args[1],
 		Vnis:             []uint64{100},
 		MigrationTimeout: 5 * time.Second,
-	}, NewSystemNetworkStrategy()).Run(ctx)
+	}, NewSystemNetworkStrategy(), AssignOther{}).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")
 	}

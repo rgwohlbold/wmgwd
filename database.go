@@ -86,6 +86,23 @@ func (db *Database) Close() error {
 	return db.client.Close()
 }
 
+func (db *Database) Nodes() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+
+	resp, err := db.client.Get(ctx, EtcdNodePrefix, v3.WithPrefix())
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get from etcd")
+	}
+
+	nodes := make([]string, 0)
+	for _, kv := range resp.Kvs {
+		nodes = append(nodes, string(kv.Key))
+	}
+
+	return nodes, nil
+}
+
 func (db *Database) Register(node string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
