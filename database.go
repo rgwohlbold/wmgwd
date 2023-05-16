@@ -52,14 +52,14 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 	return lease, nil
 }
 
-func NewDatabase(config Configuration) (*Database, error) {
+func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
 	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 
 	lease, err := createLease(ctx, client)
 	if err != nil {

@@ -1,58 +1,52 @@
 package main
 
 type MockNetworkStrategy struct {
-	numOspfAdvertised map[uint64]int
-	numOspfWithdrawn  map[uint64]int
-	numEvpnAdvertised map[uint64]int
-	numEvpnWithdrawn  map[uint64]int
-	numArpEnabled     map[uint64]int
-	numArpDisabled    map[uint64]int
-	numGratuitousArp  map[uint64]int
+	ospfAdvertised map[uint64]bool
+	evpnAdvertised map[uint64]bool
+	arpEnabled     map[uint64]bool
+	gratuitousArp  map[uint64]int
 }
 
 func NewMockNetworkStrategy() *MockNetworkStrategy {
 	return &MockNetworkStrategy{
-		numOspfAdvertised: make(map[uint64]int),
-		numOspfWithdrawn:  make(map[uint64]int),
-		numEvpnAdvertised: make(map[uint64]int),
-		numEvpnWithdrawn:  make(map[uint64]int),
-		numArpEnabled:     make(map[uint64]int),
-		numArpDisabled:    make(map[uint64]int),
-		numGratuitousArp:  make(map[uint64]int),
+		ospfAdvertised: make(map[uint64]bool),
+		evpnAdvertised: make(map[uint64]bool),
+		arpEnabled:     make(map[uint64]bool),
+		gratuitousArp:  make(map[uint64]int),
 	}
 }
 
-func (s *MockNetworkStrategy) AdvertiseOspf(vni uint64) error {
-	s.numOspfAdvertised[vni]++
+func (s MockNetworkStrategy) AdvertiseOspf(vni uint64) error {
+	s.ospfAdvertised[vni] = true
 	return nil
 }
 
-func (s *MockNetworkStrategy) WithdrawOspf(vni uint64) error {
-	s.numOspfWithdrawn[vni]++
+func (s MockNetworkStrategy) WithdrawOspf(vni uint64) error {
+	s.ospfAdvertised[vni] = false
 	return nil
 }
 
-func (s *MockNetworkStrategy) AdvertiseEvpn(vni uint64) error {
-	s.numEvpnAdvertised[vni]++
+func (s MockNetworkStrategy) AdvertiseEvpn(vni uint64) error {
+	s.evpnAdvertised[vni] = true
 	return nil
 }
 
-func (s *MockNetworkStrategy) WithdrawEvpn(vni uint64) error {
-	s.numEvpnWithdrawn[vni]++
+func (s MockNetworkStrategy) WithdrawEvpn(vni uint64) error {
+	s.evpnAdvertised[vni] = false
 	return nil
 }
 
-func (s *MockNetworkStrategy) EnableArp(vni uint64) error {
-	s.numArpEnabled[vni]++
+func (s MockNetworkStrategy) EnableArp(vni uint64) error {
+	s.arpEnabled[vni] = true
 	return nil
 }
 
-func (s *MockNetworkStrategy) DisableArp(vni uint64) error {
-	s.numArpDisabled[vni]++
+func (s MockNetworkStrategy) DisableArp(vni uint64) error {
+	s.arpEnabled[vni] = false
 	return nil
 }
 
-func (s *MockNetworkStrategy) SendGratuitousArp(vni uint64) error {
-	s.numGratuitousArp[vni]++
+func (s MockNetworkStrategy) SendGratuitousArp(vni uint64) error {
+	s.gratuitousArp[vni] += 1
 	return nil
 }

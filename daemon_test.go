@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"math/rand"
 	"os"
 	"os/exec"
 	"sync"
@@ -12,7 +13,7 @@ import (
 )
 
 func WipeDatabase(t *testing.T) {
-	db, err := NewDatabase(Configuration{})
+	db, err := NewDatabase(context.Background(), Configuration{})
 	if err != nil {
 		t.Errorf("NewDatabase(config) = %v; want nil", err)
 	}
@@ -22,132 +23,113 @@ func WipeDatabase(t *testing.T) {
 	}
 }
 
-func TestSingleDaemonFailover(t *testing.T) {
-	WipeDatabase(t)
-	networkStrategy := NewMockNetworkStrategy()
+func AssertNetworkStrategy(t *testing.T, ns *MockNetworkStrategy, vni uint64, evpnAdvertised, ospfAdvertised, arpEnabled bool, gratuitousArp int) {
+	if ns.evpnAdvertised[vni] != evpnAdvertised {
+		t.Errorf("ns.evpnAdvertised[%v] = %v; want %v", vni, ns.evpnAdvertised[vni], evpnAdvertised)
+	}
+	if ns.ospfAdvertised[vni] != ospfAdvertised {
+		t.Errorf("ns.ospfAdvertised[%v] = %v; want %v", vni, ns.ospfAdvertised[vni], ospfAdvertised)
+	}
+	if ns.arpEnabled[vni] != arpEnabled {
+		t.Errorf("ns.arpEnabled[%v] = %v; want %v", vni, ns.arpEnabled[vni], arpEnabled)
+	}
+	if ns.gratuitousArp[vni] != gratuitousArp {
+		t.Errorf("ns.gratuitousArp[%v] = %v; want %v", vni, ns.gratuitousArp[vni], gratuitousArp)
+	}
+}
+
+// https://stackoverflow.com/questions/22892120/how-to-generate-a-random-string-of-a-fixed-length-in-go
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func RandStringRunes(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
+func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, afterVniEvent func(*Daemon, VniEvent) Verdict) {
+	ns := NewMockNetworkStrategy()
 	config := Configuration{
-		Node:             "test-single-daemon",
+		Node:             "node-test-" + RandStringRunes(10),
 		Vnis:             []uint64{100},
 		MigrationTimeout: 0,
 	}
-	daemon := NewDaemon(config, networkStrategy)
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	err := daemon.Run(ctx)
-	if err != nil {
-		t.Errorf("daemon.Run(ctx) = %v; want nil", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	daemon := NewDaemon(config, ns)
+	daemon.eventProcessor = EventProcessorWrapper{
+		cancel:         cancel,
+		eventProcessor: daemon.eventProcessor,
+		afterVniEvent:  afterVniEvent,
 	}
-	if networkStrategy.numEvpnAdvertised[100] != 1 {
-		t.Errorf("networkStrategy.numEvpnAdvertised[100] = %v; want 1", networkStrategy.numEvpnAdvertised[100])
-	}
-	if networkStrategy.numOspfAdvertised[100] != 1 {
-		t.Errorf("networkStrategy.numOspfAdvertised[100] = %v; want 1", networkStrategy.numOspfAdvertised[100])
-	}
-	if networkStrategy.numArpEnabled[100] != 1 {
-		t.Errorf("networkStrategy.numArpEnabled[100] = %v; want 1", networkStrategy.numArpEnabled[100])
-	}
-	if networkStrategy.numGratuitousArp[100] != 1 {
-		t.Errorf("networkStrategy.numGratuitousArp[100] = %v; want 1", networkStrategy.numGratuitousArp[100])
-	}
-	db, err := NewDatabase(config)
-	if err != nil {
-		t.Errorf("NewDatabase(config) = %v; want nil", err)
-	}
-	state, err := db.GetState(100)
-	if err != nil {
-		t.Errorf("db.GetState(100) = %v; want nil", err)
-	}
-	if state.Type != Idle {
-		t.Errorf("state.Type = %v; want Idle", state.Type)
-	}
-	if state.Current != config.Node {
-		t.Errorf("state.Current = %v; want %v", state.Current, config.Node)
+	wg.Add(1)
+	go func() {
+		defer cancel()
+		err := daemon.Run(ctx)
+		if err != nil {
+			t.Errorf("daemon.Run(ctx) = %v; want nil", err)
+		}
+		wg.Done()
+	}()
+
+}
+
+func TestSingleDaemonFailover(t *testing.T) {
+	WipeDatabase(t)
+	assertHit := false
+	var wg sync.WaitGroup
+	RunTestDaemon(t, &wg, func(d *Daemon, e VniEvent) Verdict {
+		if e.State.Type == Idle {
+			assertHit = true
+			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
+			db, err := NewDatabase(context.Background(), d.Config)
+			if err != nil {
+				t.Errorf("NewDatabase(config) = %v; want nil", err)
+			}
+			state, err := db.GetState(100)
+			if err != nil {
+				t.Errorf("db.GetState(100) = %v; want nil", err)
+			}
+			if state.Type != Idle {
+				t.Errorf("state.Type = %v; want Idle", state.Type)
+			}
+			if state.Current != d.Config.Node {
+				t.Errorf("state.Current = %v; want %v", state.Current, d.Config.Node)
+			}
+			return VerdictStop
+		}
+		return VerdictContinue
+	})
+	wg.Wait()
+	if !assertHit {
+		t.Errorf("assertHit = %v; want true", assertHit)
 	}
 }
 
 func TestTwoDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
-	ns1 := NewMockNetworkStrategy()
-	ns2 := NewMockNetworkStrategy()
-	config1 := Configuration{
-		Node:             "test-two-daemon-1",
-		Vnis:             []uint64{100},
-		MigrationTimeout: 0,
-	}
-	config2 := Configuration{
-		Node:             "test-two-daemon-2",
-		Vnis:             []uint64{100},
-		MigrationTimeout: 1 * time.Millisecond,
-	}
-	daemon1 := NewDaemon(config1, ns1)
-	daemon2 := NewDaemon(config2, ns2)
-	ctx1, cancel1 := context.WithCancel(context.Background())
-	defer cancel1()
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	defer cancel2()
-	wg1 := sync.WaitGroup{}
-	wg1.Add(1)
-	go func() {
-		err := daemon1.Run(ctx1)
-		if err != nil {
-			t.Errorf("daemon1.Run(ctx1) = %v; want nil", err)
-		}
-		wg1.Done()
-	}()
+	numIdle := 0
+	numFailover := 0
 
-	time.Sleep(1 * time.Second)
-
-	wg2 := sync.WaitGroup{}
-	wg2.Add(1)
-	go func() {
-		err := daemon2.Run(ctx2)
-		if err != nil {
-			t.Errorf("daemon2.Run(ctx2) = %v; want nil", err)
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
+		if e.State.Type == Idle && e.State.Current == d.Config.Node {
+			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
+			numIdle++
+			return VerdictStop
+		} else if e.State.Type == FailoverDecided && e.State.Next == d.Config.Node {
+			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, false, false, false, 0)
+			numFailover++
 		}
-		wg2.Done()
-	}()
-	time.Sleep(1 * time.Second)
-	if ns1.numEvpnAdvertised[100] != 1 {
-		t.Errorf("ns1.numEvpnAdvertised[100] = %v; want 1", ns1.numEvpnAdvertised[100])
+		return VerdictContinue
 	}
-	if ns1.numOspfAdvertised[100] != 1 {
-		t.Errorf("ns1.numOspfAdvertised[100] = %v; want 1", ns1.numOspfAdvertised[100])
+	var wg sync.WaitGroup
+	RunTestDaemon(t, &wg, afterVniFunc)
+	RunTestDaemon(t, &wg, afterVniFunc)
+	wg.Wait()
+	if numIdle != 2 && numFailover != 2 {
+		t.Errorf("numIdle = %v; numFailover = %v; want 2, 2", numIdle, numFailover)
 	}
-	if ns1.numArpEnabled[100] != 1 {
-		t.Errorf("ns1.numArpEnabled[100] = %v; want 1", ns1.numArpEnabled[100])
-	}
-	if ns1.numGratuitousArp[100] != 1 {
-		t.Errorf("ns1.numGratuitousArp[100] = %v; want 1", ns1.numGratuitousArp[100])
-	}
-	if ns2.numEvpnAdvertised[100] != 0 {
-		t.Errorf("ns2.numEvpnAdvertised[100] = %v; want 0", ns1.numEvpnAdvertised[100])
-	}
-	if ns2.numOspfAdvertised[100] != 0 {
-		t.Errorf("ns2.numOspfAdvertised[100] = %v; want 0", ns1.numOspfAdvertised[100])
-	}
-	if ns2.numArpEnabled[100] != 0 {
-		t.Errorf("ns2.numArpEnabled[100] = %v; want 0", ns1.numArpEnabled[100])
-	}
-	if ns2.numGratuitousArp[100] != 0 {
-		t.Errorf("ns2.numGratuitousArp[100] = %v; want 0", ns1.numGratuitousArp[100])
-	}
-	cancel1()
-	wg1.Wait()
-	time.Sleep(10 * time.Millisecond)
-	if ns2.numEvpnAdvertised[100] != 1 {
-		t.Errorf("ns2.numEvpnAdvertised[100] = %v; want 1", ns2.numEvpnAdvertised[100])
-	}
-	if ns2.numOspfAdvertised[100] != 1 {
-		t.Errorf("ns2.numOspfAdvertised[100] = %v; want 1", ns2.numOspfAdvertised[100])
-	}
-	if ns2.numArpEnabled[100] != 1 {
-		t.Errorf("ns2.numArpEnabled[100] = %v; want 1", ns2.numArpEnabled[100])
-	}
-	if ns2.numGratuitousArp[100] != 1 {
-		t.Errorf("ns2.numGratuitousArp[100] = %v; want 1", ns2.numGratuitousArp[100])
-	}
-	cancel2()
-	wg2.Wait()
 }
 
 func TestMain(m *testing.M) {
@@ -157,6 +139,7 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Error starting etcd: %v\n", err)
 		os.Exit(1)
 	}
+	time.Sleep(2 * time.Second)
 	code := m.Run()
 	err = cmd.Process.Kill()
 	if err != nil {

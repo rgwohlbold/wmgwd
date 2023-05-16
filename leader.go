@@ -17,7 +17,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 	// we will never miss a relevant leader event: we are followers first and always observe ourselves being elected
 	setupChan <- struct{}{}
 
-	db, err := NewDatabase(d.Config)
+	db, err := NewDatabase(ctx, d.Config)
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
 	}
