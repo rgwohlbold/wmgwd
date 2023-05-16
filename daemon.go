@@ -39,19 +39,28 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 	}
 }
 
-func (d *Daemon) Register() error {
+func (d *Daemon) Register() (func(), error) {
 	db, err := NewDatabase(context.Background(), d.Config)
 	if err != nil {
-		return errors.Wrap(err, "could not open database")
+		return func() {}, errors.Wrap(err, "could not open database")
 	}
-	defer db.Close()
+	cancel := func() {
+		err = db.Unregister(d.Config.Node)
+		if err != nil {
+			log.Error().Msg("could not unregister node")
+		}
+		err = db.Close()
+		if err != nil {
+			log.Error().Msg("could not close database")
+		}
+	}
 
 	err = db.Register(d.Config.Node)
 	if err != nil {
-		return errors.Wrap(err, "could not register node")
+		return cancel, errors.Wrap(err, "could not register node")
 	}
 	log.Info().Msg("registered node")
-	return nil
+	return cancel, nil
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -98,12 +107,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		wg.Done()
 	}()
 
-	err := d.Register()
+	unregister, err := d.Register()
 	if err != nil {
 		return errors.Wrap(err, "could not register")
 	}
 
 	wg.Wait()
+	unregister()
 	log.Info().Msg("exiting, withdrawing everything")
 	for _, vni := range d.Config.Vnis {
 		err = d.networkStrategy.WithdrawEvpn(vni)
@@ -113,6 +123,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		err = d.networkStrategy.WithdrawOspf(vni)
 		if err != nil {
 			return errors.Wrap(err, "failed to withdraw ospf")
+		}
+		err = d.networkStrategy.DisableArp(vni)
+		if err != nil {
+			return errors.Wrap(err, "failed to disable arp")
 		}
 	}
 	return nil

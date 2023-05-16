@@ -114,17 +114,18 @@ func TestTwoDaemonFailover(t *testing.T) {
 	crashed := false
 	recovered := false
 
-	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
 		// Crash non-leader idle process
-		if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
+		if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			crashed = true
 			return VerdictStop
-		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node && crashed {
+		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node && crashed {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			recovered = true
+			return VerdictStop
 		}
 		return VerdictContinue
 	}

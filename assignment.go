@@ -1,5 +1,7 @@
 package main
 
+import "github.com/pkg/errors"
+
 type AssignmentStrategy interface {
 	Unassigned(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error
 	Periodical(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error
@@ -25,6 +27,9 @@ func (_ AssignOther) Unassigned(d *Daemon, db *Database, leaderState LeaderState
 	nodes, err := db.Nodes()
 	if err != nil {
 		return err
+	}
+	if len(nodes) == 0 {
+		return errors.New("no nodes")
 	}
 	node := nodes[0]
 	if node == d.Config.Node && len(nodes) > 1 {

@@ -7,11 +7,12 @@ import (
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
 	"strconv"
+	"strings"
 	"time"
 )
 
-const EtcdTimeout = 10000 * time.Second
-const EtcdLeaseTTL = 30
+const EtcdTimeout = 1 * time.Second
+const EtcdLeaseTTL = 5
 
 const EtcdVniPrefix = "/wmgwd/vni/"
 
@@ -97,7 +98,7 @@ func (db *Database) Nodes() ([]string, error) {
 
 	nodes := make([]string, 0)
 	for _, kv := range resp.Kvs {
-		nodes = append(nodes, string(kv.Key))
+		nodes = append(nodes, strings.TrimPrefix(string(kv.Key), EtcdNodePrefix))
 	}
 
 	return nodes, nil
@@ -109,6 +110,14 @@ func (db *Database) Register(node string) error {
 
 	_, err := db.client.Put(ctx, EtcdNodePrefix+node, node, v3.WithLease(db.lease))
 	return errors.Wrap(err, "could not put to etcd")
+}
+
+func (db *Database) Unregister(node string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+
+	_, err := db.client.Delete(ctx, EtcdNodePrefix+node)
+	return errors.Wrap(err, "could not delete from etcd")
 }
 
 func stateTypeToString(state VniStateType) string {

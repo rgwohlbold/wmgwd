@@ -33,7 +33,10 @@ type EventProcessorWrapper struct {
 func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
 	if event.State.Type == Unassigned {
 		if leaderState.Node == d.Config.Node {
-			return d.assignmentStrategy.Unassigned(d, db, leaderState, event.Vni)
+			err := d.assignmentStrategy.Unassigned(d, db, leaderState, event.Vni)
+			if err != nil {
+				log.Error().Err(err).Msg("could not assign unassigned vni")
+			}
 		}
 	} else if event.State.Type == MigrationDecided {
 		if event.State.Next == d.Config.Node {
