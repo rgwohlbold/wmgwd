@@ -83,8 +83,18 @@ func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
 	return &Database{client, config.Node, lease.ID, cancel}, nil
 }
 
-func (db *Database) Close() error {
-	return db.client.Close()
+func (db *Database) Close() {
+	db.cancelKeepalive()
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+	_, err := db.client.Revoke(ctx, db.lease)
+	if err != nil {
+		log.Error().Err(err).Msg("could not revoke lease")
+	}
+	err = db.client.Close()
+	if err != nil {
+		log.Error().Err(err).Msg("could not close client")
+	}
 }
 
 func (db *Database) Nodes() ([]string, error) {
