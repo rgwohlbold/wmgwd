@@ -159,6 +159,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 	if err != nil {
 		log.Fatal().Err(err).Msg("event-processor: failed to connect to database")
 	}
+	defer db.Close()
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
 

@@ -17,6 +17,7 @@ func (_ NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan
 	if err != nil {
 		log.Fatal().Err(err).Msg("node-watcher: failed to connect to database")
 	}
+	defer db.Close()
 
 	watchChan := db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix())
 	setupChan <- struct{}{}
