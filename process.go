@@ -111,7 +111,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 		}
 	} else if event.State.Type == MigrationEvpnWithdrawn {
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationEvpnWithdrawn).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
 		}
 	} else if event.State.Type == FailoverDecided {
 		if event.State.Next == d.Config.Node {
