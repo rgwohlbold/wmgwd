@@ -62,7 +62,7 @@ end:
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 	log.Debug().Msg("leader-election: context done")
-	err = election.Resign(context.Background())
+	err = election.Resign(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to resign")
 	}
