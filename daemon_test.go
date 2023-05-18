@@ -151,19 +151,16 @@ func TestMigration(t *testing.T) {
 	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
+		if !migrationDecided && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
 			// Non-leader node was assigned a migration
-			log.Info().Msg("test: migrationDecided")
 			migrationDecided = true
 			return VerdictContinue
-		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node && migrationDecided {
+		} else if !idleReached && migrationDecided && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
 			// Non-leader node was successfully migrated
 			idleReached = true
-			log.Info().Msg("test: idleReached")
 			return VerdictStop
 		} else if idleReached {
 			// Stop other node
-			log.Info().Msg("test: leaderStopped")
 			leaderStopped = true
 			return VerdictStop
 		}
