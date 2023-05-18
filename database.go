@@ -34,6 +34,27 @@ type Database struct {
 	cancelKeepalive context.CancelFunc
 }
 
+type LeaseType int
+
+const (
+	NodeLease LeaseType = iota
+	TempLease
+	OldLease
+)
+
+type VniUpdatePart struct {
+	Key       string
+	Value     string
+	LeaseType LeaseType
+}
+
+type VniUpdate struct {
+	vni        uint64
+	db         *Database
+	parts      []VniUpdatePart
+	conditions []v3.Cmp
+}
+
 type VniStateType int
 
 const (
@@ -174,68 +195,6 @@ func stateTypeToString(state VniStateType) string {
 	}
 }
 
-func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, leaderState LeaderState) error {
-	event := log.Debug().Str("type", stateTypeToString(state.Type)).Uint64("vni", vni)
-	if state.Current != "" {
-		event = event.Str("current", state.Current)
-	}
-	if state.Next != "" {
-		event = event.Str("next", state.Next)
-	}
-	event.Msg("setting state")
-
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	defer cancel()
-
-	keyPrefix := EtcdVniPrefix + "/" + strconv.FormatUint(vni, 10)
-
-	var conditions []v3.Cmp
-	var ops []v3.Op
-	if oldState.Counter != 0 {
-		conditions = append(conditions, v3.Compare(v3.Value(keyPrefix+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(oldState.Counter)))
-	}
-	if leaderState.Node == db.node {
-		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
-	}
-
-	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniTypeSuffix, strconv.Itoa(int(state.Type)), v3.WithLease(db.lease)))
-	if oldState.Current == state.Current {
-		if state.Type == FailoverAcknowledged || state.Type == MigrationAcknowledged {
-			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(db.lease)))
-		} else if state.Current != "" {
-			// If Next is set and the value does not change, keep the lease as-is to add it to the revision history
-			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithIgnoreLease()))
-		}
-	} else {
-		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(db.lease)))
-	}
-	if oldState.Next == state.Next {
-		if state.Next != "" {
-			// If Next is set and the value does not change, keep the lease as-is to add it to the revision history
-			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithIgnoreLease()))
-		}
-	} else if state.Type == FailoverDecided || state.Type == MigrationDecided {
-		// Nodes are assigned to these states by the leader, so we need to grant a separate lease to start a timeout
-		resp, err := db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
-		if err != nil {
-			return errors.Wrap(err, "could not grant lease")
-		}
-		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(resp.ID)))
-	} else {
-		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(db.lease)))
-	}
-	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCounterSuffix, strconv.Itoa(oldState.Counter+1)))
-
-	resp, err := db.client.Txn(ctx).If(conditions...).Then(ops...).Commit()
-	if err != nil {
-		return errors.Wrap(err, "could not put to etcd")
-	}
-	if !resp.Succeeded {
-		return TransactionFailed
-	}
-	return nil
-}
-
 func (db *Database) GetState(vni uint64) (VniState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
@@ -307,4 +266,88 @@ func (db *Database) VniEventFromKvs(kvs []*mvccpb.KeyValue, inputVni uint64) (Vn
 		return VniEvent{}, errors.New("no vni found")
 	}
 	return VniEvent{Vni: vni, State: state}, nil
+}
+
+func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
+	return &VniUpdate{db: db, vni: vni}
+}
+
+func (u *VniUpdate) leaseTypeToOption(ctx context.Context, leaseType LeaseType) (v3.OpOption, error) {
+	if leaseType == NodeLease {
+		return v3.WithLease(u.db.lease), nil
+	} else if leaseType == TempLease {
+		resp, err := u.db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
+		if err != nil {
+			return nil, errors.Wrap(err, "could not grant lease")
+		}
+		return v3.WithLease(resp.ID), nil
+	} else if leaseType == OldLease {
+		return v3.WithIgnoreLease(), nil
+	}
+	log.Fatal().Msg("invalid lease type")
+	return nil, nil
+}
+
+func (u *VniUpdate) Type(stateType VniStateType) *VniUpdate {
+	u.parts = append(u.parts, VniUpdatePart{
+		Key:       EtcdVniTypeSuffix,
+		Value:     strconv.Itoa(int(stateType)),
+		LeaseType: NodeLease,
+	})
+	return u
+}
+
+func (u *VniUpdate) Current(current string, leaseType LeaseType) *VniUpdate {
+	u.parts = append(u.parts, VniUpdatePart{
+		Key:       EtcdVniCurrentSuffix,
+		Value:     current,
+		LeaseType: leaseType,
+	})
+	return u
+}
+
+func (u *VniUpdate) Next(current string, leaseType LeaseType) *VniUpdate {
+	u.parts = append(u.parts, VniUpdatePart{
+		Key:       EtcdVniNextSuffix,
+		Value:     current,
+		LeaseType: leaseType,
+	})
+	return u
+}
+
+func (u *VniUpdate) OldCounter(counter int, leaseType LeaseType) *VniUpdate {
+	u.parts = append(u.parts, VniUpdatePart{
+		Key:       EtcdVniCounterSuffix,
+		Value:     strconv.Itoa(counter + 1),
+		LeaseType: leaseType,
+	})
+	u.conditions = append(u.conditions, v3.Compare(v3.Value(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(counter)))
+	return u
+}
+
+func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
+	u.conditions = append(u.conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
+	return u
+}
+
+func (u *VniUpdate) Run() error {
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+	ops := make([]v3.Op, len(u.parts))
+	for i, part := range u.parts {
+		leaseOption, err := u.leaseTypeToOption(ctx, part.LeaseType)
+		if err != nil {
+			return err
+		}
+		ops[i] = v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption)
+	}
+	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
+	if err != nil {
+		return errors.Wrap(err, "failed to update vni")
+	}
+	if !resp.Succeeded {
+		return errors.New("transaction failed")
+	}
+	return nil
+
 }

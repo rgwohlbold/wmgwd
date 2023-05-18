@@ -12,11 +12,7 @@ type AssignmentStrategy interface {
 type AssignSelf struct{}
 
 func (_ AssignSelf) Unassigned(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error {
-	return db.setVniState(vni, VniState{
-		Type:    FailoverDecided,
-		Current: "",
-		Next:    d.Config.Node,
-	}, VniState{}, leaderState)
+	return db.NewVniUpdate(vni).LeaderState(leaderState).Type(FailoverDecided).Current("", NodeLease).Next(d.Config.Node, TempLease).Run()
 }
 
 func (_ AssignSelf) Periodical(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error {
@@ -37,11 +33,7 @@ func (_ AssignOther) Unassigned(d *Daemon, db *Database, leaderState LeaderState
 	if node == d.Config.Node && len(nodes) > 1 {
 		node = nodes[1]
 	}
-	return db.setVniState(vni, VniState{
-		Type:    FailoverDecided,
-		Current: "",
-		Next:    node,
-	}, VniState{}, leaderState)
+	return db.NewVniUpdate(vni).LeaderState(leaderState).Type(FailoverDecided).Current("", NodeLease).Next(node, TempLease).Run()
 }
 
 func (_ AssignOther) Periodical(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error {
@@ -56,18 +48,12 @@ func (_ AssignOther) Periodical(d *Daemon, db *Database, leaderState LeaderState
 	if node == d.Config.Node {
 		node = nodes[1]
 	}
-	for _, vni := range d.Config.Vnis {
-		state, err := db.GetState(vni)
-		if err != nil {
-			return err
-		}
-		if state.Type == Idle && state.Current == d.Config.Node {
-			return db.setVniState(vni, VniState{
-				Type:    MigrationDecided,
-				Current: d.Config.Node,
-				Next:    node,
-			}, state, leaderState)
-		}
+	state, err := db.GetState(vni)
+	if err != nil {
+		return err
+	}
+	if state.Type == Idle && state.Current == d.Config.Node {
+		return db.NewVniUpdate(vni).LeaderState(leaderState).Type(FailoverDecided).Current(d.Config.Node, OldLease).Next(node, TempLease).Run()
 	}
 	return nil
 }
