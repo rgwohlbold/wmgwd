@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
-	"fmt"
 	"github.com/mdlayher/arp"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -44,17 +42,6 @@ func (s *SystemNetworkStrategy) vtysh(commands []string) error {
 		return errors.New("vtysh returned " + string(output))
 	}
 	return nil
-}
-
-func (s *SystemNetworkStrategy) vniToEsi(vni uint64) string {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, vni)
-	esi := "00:00"
-	for i := 0; i < 8; i++ {
-		esi += ":"
-		esi += fmt.Sprintf("%02x", b[i])
-	}
-	return esi
 }
 
 func (s *SystemNetworkStrategy) AdvertiseEvpn(vni uint64) error {
