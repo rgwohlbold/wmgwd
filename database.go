@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3 "go.etcd.io/etcd/client/v3"
 	"strconv"
 	"strings"
@@ -16,7 +16,12 @@ const EtcdLeaseTTL = 5
 
 const EtcdAckTimeout = 1 * time.Second
 
-const EtcdVniPrefix = "/wmgwd/vni/"
+const EtcdVniPrefix = "/wmgwd/vni"
+
+const EtcdVniTypeSuffix = "type"
+const EtcdVniCurrentSuffix = "current"
+const EtcdVniNextSuffix = "next"
+const EtcdVniCounterSuffix = "counter"
 
 const EtcdNodePrefix = "/wmgwd/node/"
 
@@ -44,7 +49,10 @@ const (
 	MigrationEvpnWithdrawn
 	FailoverDecided
 	FailoverAcknowledged
+	NumStateTypes
 )
+
+var TransactionFailed = errors.New("transaction failed")
 
 func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
@@ -176,40 +184,43 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 	}
 	event.Msg("setting state")
 
-	key := EtcdVniPrefix + strconv.FormatUint(vni, 10)
-
-	serializedState, err := json.Marshal(state)
-	if err != nil {
-		return errors.Wrap(err, "could not marshal state")
-	}
-
-	serializedOldState, err := json.Marshal(oldState)
-	if err != nil {
-		return errors.Wrap(err, "could not marshal old state")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 
+	keyPrefix := EtcdVniPrefix + "/" + strconv.FormatUint(vni, 10)
+
 	var conditions []v3.Cmp
-	if oldState.Type == Unassigned {
-		conditions = append(conditions, v3.Compare(v3.CreateRevision(key), "=", 0))
-	} else {
-		conditions = append(conditions, v3.Compare(v3.Value(key), "=", string(serializedOldState)))
+	var ops []v3.Op
+	if oldState.Counter != 0 {
+		conditions = append(conditions, v3.Compare(v3.Value(keyPrefix+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(oldState.Counter)))
 	}
 	if leaderState.Node == db.node {
 		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
 	}
+
 	lease := db.lease
+	// Nodes are assigned to these states by the leader, so we need to grant a separate lease to start a timeout
 	if state.Type == FailoverDecided || state.Type == MigrationDecided {
-		var resp *v3.LeaseGrantResponse
-		resp, err = db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
+		resp, err := db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
 		if err != nil {
 			return errors.Wrap(err, "could not grant lease")
 		}
 		lease = resp.ID
 	}
-	_, err = db.client.Txn(ctx).If(conditions...).Then(v3.OpPut(key, string(serializedState), v3.WithLease(lease))).Commit()
+
+	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniTypeSuffix, strconv.Itoa(int(state.Type)), v3.WithLease(lease)))
+	if oldState.Next != state.Next || oldState.Type == FailoverDecided || oldState.Type == MigrationDecided {
+		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(lease)))
+	}
+	if oldState.Current != state.Current {
+		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(lease)))
+	}
+	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCounterSuffix, strconv.Itoa(oldState.Counter+1)))
+
+	resp, err := db.client.Txn(ctx).If(conditions...).Then(ops...).Commit()
+	if !resp.Succeeded {
+		return TransactionFailed
+	}
 	if err != nil {
 		return errors.Wrap(err, "could not put to etcd")
 	}
@@ -219,17 +230,64 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 func (db *Database) GetState(vni uint64) (VniState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	resp, err := db.client.Get(ctx, EtcdVniPrefix+strconv.FormatUint(vni, 10))
+	resp, err := db.client.Get(ctx, EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/", v3.WithPrefix())
 	if err != nil {
 		return VniState{}, err
 	}
-	if len(resp.Kvs) == 0 {
-		return VniState{Type: Unassigned}, nil
-	}
-	var state VniState
-	err = json.Unmarshal(resp.Kvs[0].Value, &state)
+	event, err := db.VniEventFromKvs(resp.Kvs, vni)
 	if err != nil {
 		return VniState{}, err
 	}
-	return state, nil
+	return event.State, nil
+}
+
+const InvalidVni = ^uint64(0)
+
+var InvalidKey = errors.New("invalid key")
+var InvalidValue = errors.New("invalid value")
+
+func (db *Database) VniEventFromKvs(kvs []*mvccpb.KeyValue, inputVni uint64) (VniEvent, error) {
+	vni := inputVni
+	state := VniState{}
+	for _, kv := range kvs {
+		keyRest := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/")
+		parts := strings.Split(keyRest, "/")
+		if len(parts) != 2 {
+			return VniEvent{}, InvalidKey
+		}
+		parsedVni, err := strconv.ParseUint(parts[0], 10, 64)
+		if err != nil {
+			log.Error().Str("key", string(kv.Key)).Str("vni", keyRest).Err(err).Msg("vni-watcher: failed to parse vni")
+			return VniEvent{}, InvalidKey
+		}
+		if vni != InvalidVni && parsedVni != vni {
+			log.Error().Str("key", string(kv.Key)).Str("vni", keyRest).Msg("vni-watcher: vni mismatch")
+			return VniEvent{}, InvalidKey
+		}
+		vni = parsedVni
+
+		if parts[1] == EtcdVniTypeSuffix {
+			value, err := strconv.Atoi(string(kv.Value))
+			if err != nil || value < 0 || value >= int(NumStateTypes) {
+				return VniEvent{}, InvalidValue
+			}
+			state.Type = VniStateType(value)
+		} else if parts[1] == EtcdVniCurrentSuffix {
+			state.Current = string(kv.Value)
+		} else if parts[1] == EtcdVniNextSuffix {
+			state.Next = string(kv.Value)
+		} else if parts[1] == EtcdVniCounterSuffix {
+			value, err := strconv.Atoi(string(kv.Value))
+			if err != nil || value < 0 {
+				return VniEvent{}, InvalidValue
+			}
+			state.Counter = value
+		} else {
+			return VniEvent{}, InvalidKey
+		}
+	}
+	if vni == InvalidVni {
+		return VniEvent{}, InvalidKey
+	}
+	return VniEvent{Vni: vni, State: state}, nil
 }

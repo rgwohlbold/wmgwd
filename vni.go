@@ -2,17 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/rs/zerolog/log"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3 "go.etcd.io/etcd/client/v3"
-	"strconv"
-	"strings"
 )
 
 type VniState struct {
-	Type    VniStateType `json:"type"`
-	Current string       `json:"current"`
-	Next    string       `json:"next"`
+	Type    VniStateType
+	Current string
+	Next    string
+	Counter int
 }
 
 type VniEvent struct {
@@ -31,27 +30,22 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			log.Debug().Msg("vni-watcher: context done")
 			return
 		case e := <-watchChan:
+			kvs := make([]*mvccpb.KeyValue, 0)
 			for _, ev := range e.Events {
-				keyRest := strings.TrimPrefix(string(ev.Kv.Key), EtcdVniPrefix)
-				vni, err := strconv.ParseUint(keyRest, 10, 32)
-				if err != nil {
-					log.Error().Str("key", string(ev.Kv.Key)).Str("vni", keyRest).Err(err).Msg("vni-watcher: failed to parse vni")
-					continue
+				if ev.Type == v3.EventTypePut {
+					kvs = append(kvs, ev.Kv)
 				}
-				state := VniState{}
-
-				if ev.Type == v3.EventTypeDelete {
-					state.Type = Unassigned
-				} else {
-					err = json.Unmarshal(ev.Kv.Value, &state)
-					if err != nil {
-						log.Error().Str("key", string(ev.Kv.Key)).Str("value", string(ev.Kv.Value)).Err(err).Msg("vni-watcher: failed to parse state")
-						continue
-					}
-				}
-
-				ch <- VniEvent{Vni: vni, State: state}
 			}
+			if len(kvs) == 0 {
+				continue
+			}
+			event, err := d.db.VniEventFromKvs(kvs, InvalidVni)
+			if err != nil {
+				log.Error().Err(err).Msg("vni-watcher: failed to parse vni event")
+				continue
+			}
+			log.Debug().Interface("event", event).Msg("vni-watcher: got event")
+			ch <- event
 		}
 	}
 }
