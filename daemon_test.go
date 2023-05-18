@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"math/rand"
 	"os"
@@ -198,17 +197,14 @@ func TestCrashFailoverDecided(t *testing.T) {
 		defer lock.Unlock()
 		if !firstIdleCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
 			// First non-leader idle process crashes
-			log.Info().Msg("firstIdleCrashed")
 			firstIdleCrashed = true
 			return VerdictStop
 		} else if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
 			// Second non-leader process crashes in FailoverDecided
-			log.Info().Msg("secondFailoverCrashed")
 			secondFailoverCrashed = true
 			return VerdictStop
 		} else if secondFailoverCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
 			// Third process (leader) is assigned and reaches idle
-			log.Info().Msg("thirdReachesIdle")
 			thirdReachesIdle = true
 			return VerdictStop
 		}
