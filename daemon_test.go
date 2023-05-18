@@ -142,20 +142,27 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 }
 
+// TestMigration tests that after the leader decides to migrate, the next node will reach Idle
 func TestMigration(t *testing.T) {
 	WipeDatabase(t)
+	leaderAssignedItself := false
 	migrationDecided := false
 	idleReached := false
 	leaderStopped := false
 	var lock sync.Mutex
+	var wg sync.WaitGroup
 	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !migrationDecided && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
+		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node {
+			leaderAssignedItself = true
+			wg.Done()
+			return VerdictContinue
+		} else if leaderAssignedItself && !migrationDecided && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
 			// Non-leader node was assigned a migration
 			migrationDecided = true
 			return VerdictContinue
-		} else if !idleReached && migrationDecided && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
+		} else if migrationDecided && !idleReached && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
 			// Non-leader node was successfully migrated
 			idleReached = true
 			return VerdictStop
@@ -166,10 +173,10 @@ func TestMigration(t *testing.T) {
 		}
 		return VerdictContinue
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	time.Sleep(1 * time.Second)
+	wg.Wait()
+	wg.Add(2)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
 	if !leaderStopped {
@@ -188,12 +195,12 @@ func TestCrashFailoverDecided(t *testing.T) {
 	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
+		if !firstIdleCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
 			// First non-leader idle process crashes
 			log.Info().Msg("firstIdleCrashed")
 			firstIdleCrashed = true
 			return VerdictStop
-		} else if firstIdleCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+		} else if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
 			// Second non-leader process crashes in FailoverDecided
 			log.Info().Msg("secondFailoverCrashed")
 			secondFailoverCrashed = true
@@ -220,12 +227,18 @@ func TestCrashFailoverDecided(t *testing.T) {
 func TestCrashMigrationDecided(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
+	var wg sync.WaitGroup
+	leaderAssignedItself := false
 	firstMigrationCrashed := false
 	secondReachesIdle := false
 	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !firstMigrationCrashed && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
+			leaderAssignedItself = true
+			wg.Done()
+			return VerdictContinue
+		} else if leaderAssignedItself && !firstMigrationCrashed && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
 			firstMigrationCrashed = true
 			return VerdictStop
 		} else if firstMigrationCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
@@ -236,10 +249,10 @@ func TestCrashMigrationDecided(t *testing.T) {
 		}
 		return VerdictContinue
 	}
-	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(1)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	time.Sleep(1 * time.Second)
+	wg.Wait()
+	wg.Add(3)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
 	wg.Wait()
@@ -255,7 +268,12 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Error starting etcd: %v\n", err)
 		os.Exit(1)
 	}
-	time.Sleep(2 * time.Second)
+	db, err := NewDatabase(context.Background(), Configuration{Node: "db-starter"})
+	if err != nil {
+		fmt.Printf("Error creating database: %v\n", err)
+		os.Exit(1)
+	}
+	db.Close()
 	code := m.Run()
 	err = cmd.Process.Kill()
 	if err != nil {

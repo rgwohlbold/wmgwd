@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
@@ -12,7 +11,7 @@ import (
 	"time"
 )
 
-const EtcdTimeout = 1 * time.Second
+const EtcdTimeout = 5 * time.Second
 const EtcdLeaseTTL = 5
 
 const EtcdAckTimeout = 1 * time.Second
@@ -72,7 +71,6 @@ func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
 		cancel()
 		return nil, err
 	}
-	log.Info().Str("lease", fmt.Sprintf("%x", lease.ID)).Str("node", config.Node).Msg("got lease")
 
 	respChan, err := client.KeepAlive(ctx, lease.ID)
 	if err != nil {
@@ -93,7 +91,6 @@ func (db *Database) Close() {
 	db.cancelKeepalive()
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	log.Info().Str("lease", fmt.Sprintf("%x", db.lease)).Msg("revoking lease")
 	_, err := db.client.Revoke(ctx, db.lease)
 	if err != nil {
 		log.Error().Err(err).Msg("could not revoke lease")
