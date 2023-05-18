@@ -28,6 +28,11 @@ type EventProcessorWrapper struct {
 	cancel         context.CancelFunc
 	eventProcessor EventProcessor
 	afterVniEvent  func(*Daemon, LeaderState, VniEvent) Verdict
+	beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict
+}
+
+func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
+	return VerdictContinue
 }
 
 func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
@@ -140,6 +145,14 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			}, event.State, leaderState)
 		}
 	} else if event.State.Type == FailoverDecided {
+		// Acknowledge failover to use our own lease, therefore stop the timer that unassigns the vni
+		if event.State.Next == d.Config.Node {
+			return db.setVniState(event.Vni, VniState{
+				Type: FailoverAcknowledged,
+				Next: event.State.Next,
+			}, event.State, leaderState)
+		}
+	} else if event.State.Type == FailoverAcknowledged {
 		if event.State.Next == d.Config.Node {
 			err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 			if err != nil {
@@ -260,9 +273,14 @@ func (p EventProcessorWrapper) Process(ctx context.Context, d *Daemon, vniChan c
 			case <-ctx.Done():
 				return
 			case event := <-vniChan:
+				if p.beforeVniEvent(d, leaderState, event) == VerdictStop {
+					p.cancel()
+					return
+				}
 				internalVniChan <- event
 				if p.afterVniEvent(d, leaderState, event) == VerdictStop {
 					p.cancel()
+					return
 				}
 			case leaderState = <-leaderChan:
 				internalLeaderChan <- leaderState

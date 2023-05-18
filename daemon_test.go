@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"math/rand"
 	"os"
@@ -50,7 +51,7 @@ func RandStringRunes(n int) string {
 	return string(b)
 }
 
-func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) {
+func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) {
 	ns := NewMockNetworkStrategy()
 	config := Configuration{
 		Node:             "node-test-" + RandStringRunes(10),
@@ -63,6 +64,7 @@ func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afte
 	daemon.eventProcessor = EventProcessorWrapper{
 		cancel:         cancel,
 		eventProcessor: daemon.eventProcessor,
+		beforeVniEvent: beforeVniEvent,
 		afterVniEvent:  afterVniEvent,
 	}
 	go func() {
@@ -82,7 +84,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	assertHit := false
 	var wg sync.WaitGroup
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignSelf{}, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	RunTestDaemon(t, &wg, AssignSelf{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
@@ -134,8 +136,8 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
 	wg.Wait()
 	if !recovered {
 		t.Errorf("recovered = %v; want true", recovered)
@@ -174,23 +176,35 @@ func TestMigration(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
 	wg.Wait()
 	wg.Add(2)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
 	wg.Wait()
 	if !leaderStopped {
 		t.Errorf("leaderStopped = %v; want true", leaderStopped)
 	}
 }
 
-// TestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided, the VNI will fail over to the next node.
-func TestCrashFailoverDecided(t *testing.T) {
+// SubTestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided or FailoverAcknowledged, the VNI will fail over to the next node.
+func SubTestCrashFailoverDecided(t *testing.T, stateType VniStateType) {
 	WipeDatabase(t)
 	var lock sync.Mutex
 	firstIdleCrashed := false
 	secondFailoverCrashed := false
 	thirdReachesIdle := false
+
+	beforeVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+
+		if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == stateType && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+			// Second non-leader process crashes in FailoverDecided
+			secondFailoverCrashed = true
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
 
 	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		lock.Lock()
@@ -198,10 +212,6 @@ func TestCrashFailoverDecided(t *testing.T) {
 		if !firstIdleCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
 			// First non-leader idle process crashes
 			firstIdleCrashed = true
-			return VerdictStop
-		} else if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
-			// Second non-leader process crashes in FailoverDecided
-			secondFailoverCrashed = true
 			return VerdictStop
 		} else if secondFailoverCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
 			// Third process (leader) is assigned and reaches idle
@@ -212,34 +222,61 @@ func TestCrashFailoverDecided(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(3)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
 	wg.Wait()
 	if !thirdReachesIdle {
 		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
 	}
 }
 
-// TestCrashMigrationDecided tests that after a node crashes when it is assigned in MigrationDecided, the VNI will fail over to the next node.
-func TestCrashMigrationDecided(t *testing.T) {
+func TestCrashFailoverDecided(t *testing.T) {
+	SubTestCrashFailoverDecided(t, FailoverDecided)
+}
+
+func TestCrashFailoverAcknowledged(t *testing.T) {
+	SubTestCrashFailoverDecided(t, FailoverAcknowledged)
+}
+
+type CrashType int
+
+const (
+	CrashCurrent CrashType = iota
+	CrashNext
+)
+
+// SubTestCrashMigrationDecided tests that after a node crashes when it is assigned as current or next (depending on crashType) in state stateType, the VNI will fail over to the next node.
+func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashType CrashType) {
 	WipeDatabase(t)
 	var lock sync.Mutex
 	var wg sync.WaitGroup
 	leaderAssignedItself := false
 	firstMigrationCrashed := false
 	secondReachesIdle := false
+	beforeVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		if leaderAssignedItself && !firstMigrationCrashed &&
+			e.State.Type == stateType &&
+			(crashType == CrashNext && e.State.Next == d.Config.Node || crashType == CrashCurrent && e.State.Current == d.Config.Node) &&
+			s.Node != d.Config.Node {
+			log.Info().Msg("first migration crashed")
+			firstMigrationCrashed = true
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
 	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
 		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
+			log.Info().Msg("leader assigned itself")
 			leaderAssignedItself = true
 			wg.Done()
 			return VerdictContinue
-		} else if leaderAssignedItself && !firstMigrationCrashed && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
-			firstMigrationCrashed = true
-			return VerdictStop
 		} else if firstMigrationCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
+			log.Info().Msg("second reaches idle")
 			secondReachesIdle = true
 			return VerdictStop
 		} else if secondReachesIdle {
@@ -248,15 +285,47 @@ func TestCrashMigrationDecided(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
 	wg.Wait()
 	wg.Add(3)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
 	wg.Wait()
 	if !secondReachesIdle {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesIdle)
 	}
+}
+
+func TestCrashNextMigrationDecided(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationDecided, CrashNext)
+}
+
+func TestCrashNextMigrationAcknowledged(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationAcknowledged, CrashNext)
+}
+
+func TestCrashCurrentMigrationOspfAdvertised(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationOspfAdvertised, CrashCurrent)
+}
+
+func TestCrashNextMigrationOspfWithdrawn(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationOspfWithdrawn, CrashNext)
+}
+
+func TestCrashCurrentArpEnabled(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationArpEnabled, CrashCurrent)
+}
+
+func TestCrashNextArpDisabled(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationArpDisabled, CrashNext)
+}
+
+func TestCrashCurrentGratuitousArpSent(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationGratuitousArpSent, CrashCurrent)
+}
+
+func TestCrashNextEvpnWithdrawn(t *testing.T) {
+	SubTestCrashMigrationDecided(t, MigrationEvpnWithdrawn, CrashNext)
 }
 
 func TestMain(m *testing.M) {

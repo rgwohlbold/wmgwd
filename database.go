@@ -43,6 +43,7 @@ const (
 	MigrationGratuitousArpSent
 	MigrationEvpnWithdrawn
 	FailoverDecided
+	FailoverAcknowledged
 )
 
 func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse, error) {
@@ -158,6 +159,8 @@ func stateTypeToString(state VniStateType) string {
 		return "migration-evpn-withdrawn"
 	case FailoverDecided:
 		return "failover-decided"
+	case FailoverAcknowledged:
+		return "failover-acknowledged"
 	default:
 		return "unknown"
 	}
