@@ -246,48 +246,56 @@ const InvalidVni = ^uint64(0)
 var InvalidKey = errors.New("invalid key")
 var InvalidValue = errors.New("invalid value")
 
+func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
+	keyRest := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/")
+	parts := strings.Split(keyRest, "/")
+	if len(parts) != 2 {
+		return 0, InvalidKey
+	}
+	parsedVni, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil {
+		log.Error().Str("key", string(kv.Key)).Str("vni", keyRest).Err(err).Msg("vni-watcher: failed to parse vni")
+		return 0, InvalidKey
+	}
+	return parsedVni, nil
+}
+
 func (db *Database) VniEventFromKvs(kvs []*mvccpb.KeyValue, inputVni uint64) (VniEvent, error) {
 	vni := inputVni
 	state := VniState{}
 	for _, kv := range kvs {
-		keyRest := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/")
-		parts := strings.Split(keyRest, "/")
-		if len(parts) != 2 {
-			return VniEvent{}, InvalidKey
-		}
-		parsedVni, err := strconv.ParseUint(parts[0], 10, 64)
+		parsedVni, err := db.VniFromKv(kv)
 		if err != nil {
-			log.Error().Str("key", string(kv.Key)).Str("vni", keyRest).Err(err).Msg("vni-watcher: failed to parse vni")
-			return VniEvent{}, InvalidKey
+			return VniEvent{}, err
 		}
 		if vni != InvalidVni && parsedVni != vni {
-			log.Error().Str("key", string(kv.Key)).Str("vni", keyRest).Msg("vni-watcher: vni mismatch")
-			return VniEvent{}, InvalidKey
+			return VniEvent{}, errors.New("vni mismatch between kvs")
 		}
 		vni = parsedVni
 
-		if parts[1] == EtcdVniTypeSuffix {
+		suffix := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/")
+		if suffix == EtcdVniTypeSuffix {
 			value, err := strconv.Atoi(string(kv.Value))
 			if err != nil || value < 0 || value >= int(NumStateTypes) {
-				return VniEvent{}, InvalidValue
+				return VniEvent{}, errors.New("invalid state type")
 			}
 			state.Type = VniStateType(value)
-		} else if parts[1] == EtcdVniCurrentSuffix {
+		} else if suffix == EtcdVniCurrentSuffix {
 			state.Current = string(kv.Value)
-		} else if parts[1] == EtcdVniNextSuffix {
+		} else if suffix == EtcdVniNextSuffix {
 			state.Next = string(kv.Value)
-		} else if parts[1] == EtcdVniCounterSuffix {
+		} else if suffix == EtcdVniCounterSuffix {
 			value, err := strconv.Atoi(string(kv.Value))
 			if err != nil || value < 0 {
-				return VniEvent{}, InvalidValue
+				return VniEvent{}, errors.New("invalid counter")
 			}
 			state.Counter = value
 		} else {
-			return VniEvent{}, InvalidKey
+			return VniEvent{}, errors.New("invalid suffix")
 		}
 	}
 	if vni == InvalidVni {
-		return VniEvent{}, InvalidKey
+		return VniEvent{}, errors.New("no vni found")
 	}
 	return VniEvent{Vni: vni, State: state}, nil
 }

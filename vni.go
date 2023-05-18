@@ -30,16 +30,24 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			log.Debug().Msg("vni-watcher: context done")
 			return
 		case e := <-watchChan:
-			kvs := make([]*mvccpb.KeyValue, 0)
+			kvs := make([]*mvccpb.KeyValue, 0, len(e.Events))
+			vni := InvalidVni
 			for _, ev := range e.Events {
+				parsedVni, err := d.db.VniFromKv(ev.Kv)
+				if err != nil {
+					log.Error().Err(err).Msg("vni-watcher: failed to parse vni")
+					continue
+				}
+				if vni != InvalidVni && parsedVni != vni {
+					log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got event for multiple vnis")
+					continue
+				}
+				vni = parsedVni
 				if ev.Type == v3.EventTypePut {
 					kvs = append(kvs, ev.Kv)
 				}
 			}
-			if len(kvs) == 0 {
-				continue
-			}
-			event, err := d.db.VniEventFromKvs(kvs, InvalidVni)
+			event, err := d.db.VniEventFromKvs(kvs, vni)
 			if err != nil {
 				log.Error().Err(err).Msg("vni-watcher: failed to parse vni event")
 				continue
