@@ -1,6 +1,8 @@
 package main
 
-import "github.com/pkg/errors"
+import (
+	"github.com/pkg/errors"
+)
 
 type AssignmentStrategy interface {
 	Unassigned(d *Daemon, db *Database, leaderState LeaderState, vni uint64) error
@@ -38,7 +40,7 @@ func (_ AssignOther) Unassigned(d *Daemon, db *Database, leaderState LeaderState
 	return db.setVniState(vni, VniState{
 		Type:    FailoverDecided,
 		Current: "",
-		Next:    nodes[0],
+		Next:    node,
 	}, VniState{}, leaderState)
 }
 
