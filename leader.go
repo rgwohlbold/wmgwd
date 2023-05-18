@@ -17,14 +17,8 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 	// we will never miss a relevant leader event: we are followers first and always observe ourselves being elected
 	setupChan <- struct{}{}
 
-	db, err := NewDatabase(ctx, d.Config)
-	if err != nil {
-		log.Fatal().Err(err).Msg("leader-election: failed to connect to database")
-	}
-	defer db.Close()
-
 	leaderChan <- LeaderState{Node: "", Key: ""}
-	session, err := concurrency.NewSession(db.client, concurrency.WithTTL(EtcdLeaseTTL))
+	session, err := concurrency.NewSession(d.db.client, concurrency.WithTTL(EtcdLeaseTTL))
 	if err != nil {
 		log.Fatal().Err(err).Msg("leader-election: failed to create session")
 	}

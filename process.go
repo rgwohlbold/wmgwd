@@ -39,6 +39,15 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			}
 		}
 	} else if event.State.Type == MigrationDecided {
+		// Acknowledge migration to use our own lease, therefore stop the timer that unassigns the vni
+		if event.State.Next == d.Config.Node {
+			return db.setVniState(event.Vni, VniState{
+				Type:    MigrationAcknowledged,
+				Current: event.State.Current,
+				Next:    event.State.Next,
+			}, event.State, leaderState)
+		}
+	} else if event.State.Type == MigrationAcknowledged {
 		if event.State.Next == d.Config.Node {
 			err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 			if err != nil {
@@ -118,6 +127,14 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				return errors.Wrap(err, "could not withdraw evpn")
 			}
 			return db.setVniState(event.Vni, VniState{
+				Type:    MigrationEvpnWithdrawn,
+				Current: event.State.Current,
+				Next:    event.State.Next,
+			}, event.State, leaderState)
+		}
+	} else if event.State.Type == MigrationEvpnWithdrawn {
+		if event.State.Next == d.Config.Node {
+			return db.setVniState(event.Vni, VniState{
 				Type:    Idle,
 				Current: event.State.Next,
 			}, event.State, leaderState)
@@ -155,11 +172,6 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 }
 
 func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent) error {
-	db, err := NewDatabase(ctx, d.Config)
-	if err != nil {
-		log.Fatal().Err(err).Msg("event-processor: failed to connect to database")
-	}
-	defer db.Close()
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
 
@@ -171,7 +183,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			return nil
 		case <-time.After(d.Config.ScanInterval):
 			for _, vni := range d.Config.Vnis {
-				err = d.assignmentStrategy.Periodical(d, db, leader, vni)
+				err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
 				if err != nil {
 					log.Error().Err(err).Msg("event-processor: failed to process periodical")
 				}
@@ -180,20 +192,20 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			if leader.Node == d.Config.Node && newNodeEvent.Node != d.Config.Node {
 				log.Info().Str("node", newNodeEvent.Node).Msg("event-processor: new node")
 				for _, vni := range d.Config.Vnis {
-					err = d.assignmentStrategy.Periodical(d, db, leader, vni)
+					err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
 					if err != nil {
 						log.Error().Err(err).Msg("event-processor: failed to process new node")
 					}
 				}
 			}
 		case event := <-vniChan:
-			err = p.ProcessVniEvent(d, leader, event, db)
+			err := p.ProcessVniEvent(d, leader, event, d.db)
 			if err != nil {
 				log.Fatal().Err(err).Msg("event-processor: failed to process event")
 			}
 		case leader = <-leaderChan:
 			for _, vni := range d.Config.Vnis {
-				state, err := db.GetState(vni)
+				state, err := d.db.GetState(vni)
 				if err != nil {
 					log.Fatal().Err(err).Msg("event-processor: failed to get state")
 				}
@@ -202,8 +214,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 		case sig := <-c:
 			if sig == syscall.SIGUSR1 {
 				vni := d.Config.Vnis[0]
-				var state VniState
-				state, err = db.GetState(vni)
+				state, err := d.db.GetState(vni)
 				if err != nil {
 					log.Fatal().Err(err).Msg("event-processor: failed to get state")
 				}
@@ -214,7 +225,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				if state.Current == "h1" {
 					newNode = "h2"
 				}
-				err = db.setVniState(vni, VniState{
+				err = d.db.setVniState(vni, VniState{
 					Type:    MigrationDecided,
 					Current: state.Current,
 					Next:    newNode,
@@ -224,7 +235,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				}
 			}
 		case timerEvent := <-timerChan:
-			err = timerEvent.Func()
+			err := timerEvent.Func()
 			if err != nil {
 				log.Fatal().Err(err).Msg("event-processor: failed to execute timer event")
 			}

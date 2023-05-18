@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
@@ -35,11 +36,13 @@ const (
 	Unassigned VniStateType = iota
 	Idle
 	MigrationDecided
+	MigrationAcknowledged
 	MigrationOspfAdvertised
 	MigrationOspfWithdrawn
 	MigrationArpEnabled
 	MigrationArpDisabled
 	MigrationGratuitousArpSent
+	MigrationEvpnWithdrawn
 	FailoverDecided
 )
 
@@ -69,6 +72,7 @@ func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
 		cancel()
 		return nil, err
 	}
+	log.Info().Str("lease", fmt.Sprintf("%x", lease.ID)).Str("node", config.Node).Msg("got lease")
 
 	respChan, err := client.KeepAlive(ctx, lease.ID)
 	if err != nil {
@@ -89,6 +93,7 @@ func (db *Database) Close() {
 	db.cancelKeepalive()
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
+	log.Info().Str("lease", fmt.Sprintf("%x", db.lease)).Msg("revoking lease")
 	_, err := db.client.Revoke(ctx, db.lease)
 	if err != nil {
 		log.Error().Err(err).Msg("could not revoke lease")
@@ -140,7 +145,8 @@ func stateTypeToString(state VniStateType) string {
 		return "idle"
 	case MigrationDecided:
 		return "migration-decided"
-
+	case MigrationAcknowledged:
+		return "migration-acknowledged"
 	case MigrationOspfAdvertised:
 		return "migration-ospf-advertised"
 	case MigrationOspfWithdrawn:
@@ -151,6 +157,8 @@ func stateTypeToString(state VniStateType) string {
 		return "migration-arp-disabled"
 	case MigrationGratuitousArpSent:
 		return "migration-gratuitous-arp-sent"
+	case MigrationEvpnWithdrawn:
+		return "migration-evpn-withdrawn"
 	case FailoverDecided:
 		return "failover-decided"
 	default:

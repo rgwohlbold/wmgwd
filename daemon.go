@@ -24,6 +24,7 @@ type Daemon struct {
 	newNodeEventIngestor NewNodeEventIngestor
 	leaderEventIngestor  LeaderEventIngestor
 	eventProcessor       EventProcessor
+	db                   *Database
 }
 
 func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) *Daemon {
@@ -39,30 +40,15 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 	}
 }
 
-func (d *Daemon) Register() (func(), error) {
-	db, err := NewDatabase(context.Background(), d.Config)
-	if err != nil {
-		return func() {}, errors.Wrap(err, "could not open database")
-	}
-	cancel := func() {
-		err = db.Unregister(d.Config.Node)
-		if err != nil {
-			log.Error().Msg("could not unregister node")
-		}
-		db.Close()
-	}
-
-	err = db.Register(d.Config.Node)
-	if err != nil {
-		return cancel, errors.Wrap(err, "could not register node")
-	}
-	log.Info().Msg("registered node")
-	return cancel, nil
-}
-
 func (d *Daemon) Run(ctx context.Context) error {
+	var err error
+	d.db, err = NewDatabase(ctx, d.Config)
+	defer d.db.Close()
+	if err != nil {
+		return errors.Wrap(err, "could not open database")
+	}
 	for _, vni := range d.Config.Vnis {
-		err := d.networkStrategy.WithdrawEvpn(vni)
+		err = d.networkStrategy.WithdrawEvpn(vni)
 		if err != nil {
 			return errors.Wrap(err, "failed to withdraw evpn")
 		}
@@ -104,13 +90,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		wg.Done()
 	}()
 
-	unregister, err := d.Register()
+	err = d.db.Register(d.Config.Node)
 	if err != nil {
 		return errors.Wrap(err, "could not register")
 	}
 
 	wg.Wait()
-	unregister()
 	log.Info().Msg("exiting, withdrawing everything")
 	for _, vni := range d.Config.Vnis {
 		err = d.networkStrategy.WithdrawEvpn(vni)

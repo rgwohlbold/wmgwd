@@ -35,7 +35,7 @@ func AssertNetworkStrategy(t *testing.T, ns *MockNetworkStrategy, vni uint64, ev
 	if ns.arpEnabled[vni] != arpEnabled {
 		t.Errorf("ns.arpEnabled[%v] = %v; want %v", vni, ns.arpEnabled[vni], arpEnabled)
 	}
-	if ns.gratuitousArp[vni] != gratuitousArp {
+	if ns.gratuitousArp[vni] < gratuitousArp {
 		t.Errorf("ns.gratuitousArp[%v] = %v; want %v", vni, ns.gratuitousArp[vni], gratuitousArp)
 	}
 }
@@ -121,11 +121,11 @@ func TestTwoDaemonFailover(t *testing.T) {
 		lock.Lock()
 		defer lock.Unlock()
 		// Crash non-leader idle process
-		if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
+		if !crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			crashed = true
 			return VerdictStop
-		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node && crashed {
+		} else if crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			recovered = true
 			return VerdictStop

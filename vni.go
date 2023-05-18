@@ -23,13 +23,7 @@ type VniEvent struct {
 type VniEventIngestor struct{}
 
 func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEvent, setupChan chan<- struct{}) {
-	db, err := NewDatabase(ctx, d.Config)
-	if err != nil {
-		log.Fatal().Err(err).Msg("vni-watcher: failed to connect to database")
-	}
-	defer db.Close()
-
-	watchChan := db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix())
+	watchChan := d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 	setupChan <- struct{}{}
 	for {
 		select {
