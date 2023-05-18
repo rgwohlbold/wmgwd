@@ -47,6 +47,9 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 					kvs = append(kvs, ev.Kv)
 				}
 			}
+			if vni == InvalidVni && len(kvs) == 0 {
+				continue
+			}
 			event, err := d.db.VniEventFromKvs(kvs, vni)
 			if err != nil {
 				log.Error().Err(err).Msg("vni-watcher: failed to parse vni event")

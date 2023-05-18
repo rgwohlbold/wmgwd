@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const EtcdTimeout = 5 * time.Second
+const EtcdTimeout = 500 * time.Second
 const EtcdLeaseTTL = 5
 
 const EtcdAckTimeout = 1 * time.Second
@@ -198,31 +198,40 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
 	}
 
-	lease := db.lease
-	// Nodes are assigned to these states by the leader, so we need to grant a separate lease to start a timeout
-	if state.Type == FailoverDecided || state.Type == MigrationDecided {
+	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniTypeSuffix, strconv.Itoa(int(state.Type)), v3.WithLease(db.lease)))
+	if oldState.Current == state.Current {
+		if state.Type == FailoverAcknowledged || state.Type == MigrationAcknowledged {
+			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(db.lease)))
+		} else if state.Current != "" {
+			// If Next is set and the value does not change, keep the lease as-is to add it to the revision history
+			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithIgnoreLease()))
+		}
+	} else {
+		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(db.lease)))
+	}
+	if oldState.Next == state.Next {
+		if state.Next != "" {
+			// If Next is set and the value does not change, keep the lease as-is to add it to the revision history
+			ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithIgnoreLease()))
+		}
+	} else if state.Type == FailoverDecided || state.Type == MigrationDecided {
+		// Nodes are assigned to these states by the leader, so we need to grant a separate lease to start a timeout
 		resp, err := db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
 		if err != nil {
 			return errors.Wrap(err, "could not grant lease")
 		}
-		lease = resp.ID
-	}
-
-	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniTypeSuffix, strconv.Itoa(int(state.Type)), v3.WithLease(lease)))
-	if oldState.Next != state.Next || oldState.Type == FailoverDecided || oldState.Type == MigrationDecided {
-		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(lease)))
-	}
-	if oldState.Current != state.Current {
-		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCurrentSuffix, state.Current, v3.WithLease(lease)))
+		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(resp.ID)))
+	} else {
+		ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniNextSuffix, state.Next, v3.WithLease(db.lease)))
 	}
 	ops = append(ops, v3.OpPut(keyPrefix+"/"+EtcdVniCounterSuffix, strconv.Itoa(oldState.Counter+1)))
 
 	resp, err := db.client.Txn(ctx).If(conditions...).Then(ops...).Commit()
-	if !resp.Succeeded {
-		return TransactionFailed
-	}
 	if err != nil {
 		return errors.Wrap(err, "could not put to etcd")
+	}
+	if !resp.Succeeded {
+		return TransactionFailed
 	}
 	return nil
 }
