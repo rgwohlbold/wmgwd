@@ -182,10 +182,12 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			log.Info().Msg("event-processor: context done")
 			return nil
 		case <-time.After(d.Config.ScanInterval):
-			for _, vni := range d.Config.Vnis {
-				err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
-				if err != nil {
-					log.Error().Err(err).Msg("event-processor: failed to process periodical")
+			if leader.Node == d.Config.Node {
+				for _, vni := range d.Config.Vnis {
+					err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
+					if err != nil {
+						log.Error().Err(err).Msg("event-processor: failed to process periodical")
+					}
 				}
 			}
 		case newNodeEvent := <-newNodeChan:
