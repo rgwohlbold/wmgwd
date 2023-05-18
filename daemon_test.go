@@ -142,6 +142,44 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 }
 
+func TestMigration(t *testing.T) {
+	WipeDatabase(t)
+	migrationDecided := false
+	idleReached := false
+	leaderStopped := false
+	var lock sync.Mutex
+	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		if e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
+			// Non-leader node was assigned a migration
+			log.Info().Msg("test: migrationDecided")
+			migrationDecided = true
+			return VerdictContinue
+		} else if e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node && migrationDecided {
+			// Non-leader node was successfully migrated
+			idleReached = true
+			log.Info().Msg("test: idleReached")
+			return VerdictStop
+		} else if idleReached {
+			// Stop other node
+			log.Info().Msg("test: leaderStopped")
+			leaderStopped = true
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	time.Sleep(1 * time.Second)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	wg.Wait()
+	if !leaderStopped {
+		t.Errorf("leaderStopped = %v; want true", leaderStopped)
+	}
+}
+
 // TestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided, the VNI will fail over to the next node.
 func TestCrashFailoverDecided(t *testing.T) {
 	WipeDatabase(t)
