@@ -14,6 +14,8 @@ import (
 const EtcdTimeout = 1 * time.Second
 const EtcdLeaseTTL = 5
 
+const EtcdAckTimeout = 1 * time.Second
+
 const EtcdVniPrefix = "/wmgwd/vni/"
 
 const EtcdNodePrefix = "/wmgwd/node/"
@@ -190,7 +192,16 @@ func (db *Database) setVniState(vni uint64, state VniState, oldState VniState, l
 	if leaderState.Node == db.node {
 		conditions = append(conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
 	}
-	_, err = db.client.Txn(ctx).If(conditions...).Then(v3.OpPut(key, string(serializedState), v3.WithLease(db.lease))).Commit()
+	lease := db.lease
+	if state.Type == FailoverDecided || state.Type == MigrationDecided {
+		var resp *v3.LeaseGrantResponse
+		resp, err = db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
+		if err != nil {
+			return errors.Wrap(err, "could not grant lease")
+		}
+		lease = resp.ID
+	}
+	_, err = db.client.Txn(ctx).If(conditions...).Then(v3.OpPut(key, string(serializedState), v3.WithLease(lease))).Commit()
 	if err != nil {
 		return errors.Wrap(err, "could not put to etcd")
 	}

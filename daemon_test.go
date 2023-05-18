@@ -220,6 +220,37 @@ func TestCrashFailoverDecided(t *testing.T) {
 	}
 }
 
+func TestCrashMigrationDecided(t *testing.T) {
+	WipeDatabase(t)
+	var lock sync.Mutex
+	firstMigrationCrashed := false
+	secondReachesIdle := false
+	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		if !firstMigrationCrashed && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+			firstMigrationCrashed = true
+			return VerdictStop
+		} else if firstMigrationCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
+			secondReachesIdle = true
+			return VerdictStop
+		} else if secondReachesIdle {
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
+	var wg sync.WaitGroup
+	wg.Add(3)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	time.Sleep(1 * time.Second)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	RunTestDaemon(t, &wg, AssignOther{}, afterVniFunc)
+	wg.Wait()
+	if !secondReachesIdle {
+		t.Errorf("secondReachesIdle = %v; want true", secondReachesIdle)
+	}
+}
+
 func TestMain(m *testing.M) {
 	cmd := exec.Command("/home/richard/progs/etcd/bin/etcd")
 	err := cmd.Start()
