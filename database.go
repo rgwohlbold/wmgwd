@@ -40,6 +40,7 @@ const (
 	NodeLease LeaseType = iota
 	TempLease
 	OldLease
+	NoLease
 )
 
 type VniUpdatePart struct {
@@ -72,8 +73,6 @@ const (
 	FailoverAcknowledged
 	NumStateTypes
 )
-
-var TransactionFailed = errors.New("transaction failed")
 
 func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
@@ -195,10 +194,15 @@ func stateTypeToString(state VniStateType) string {
 	}
 }
 
-func (db *Database) GetState(vni uint64) (VniState, error) {
+func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	resp, err := db.client.Get(ctx, EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/", v3.WithPrefix())
+
+	ops := []v3.OpOption{v3.WithPrefix()}
+	if revision != -1 {
+		ops = append(ops, v3.WithRev(revision))
+	}
+	resp, err := db.client.Get(ctx, EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/", ops...)
 	if err != nil {
 		return VniState{}, err
 	}
@@ -272,20 +276,21 @@ func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
 	return &VniUpdate{db: db, vni: vni}
 }
 
-func (u *VniUpdate) leaseTypeToOption(ctx context.Context, leaseType LeaseType) (v3.OpOption, error) {
+func (u *VniUpdate) leaseTypeToOption(ctx context.Context, leaseType LeaseType) ([]v3.OpOption, error) {
 	if leaseType == NodeLease {
-		return v3.WithLease(u.db.lease), nil
+		return []v3.OpOption{v3.WithLease(u.db.lease)}, nil
 	} else if leaseType == TempLease {
 		resp, err := u.db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
 		if err != nil {
 			return nil, errors.Wrap(err, "could not grant lease")
 		}
-		return v3.WithLease(resp.ID), nil
+		return []v3.OpOption{v3.WithLease(resp.ID)}, nil
 	} else if leaseType == OldLease {
-		return v3.WithIgnoreLease(), nil
+		return []v3.OpOption{v3.WithIgnoreLease()}, nil
+	} else if leaseType == NoLease {
+		return []v3.OpOption{}, nil
 	}
-	log.Fatal().Msg("invalid lease type")
-	return nil, nil
+	return nil, errors.New("invalid lease type")
 }
 
 func (u *VniUpdate) Type(stateType VniStateType) *VniUpdate {
@@ -306,22 +311,26 @@ func (u *VniUpdate) Current(current string, leaseType LeaseType) *VniUpdate {
 	return u
 }
 
-func (u *VniUpdate) Next(current string, leaseType LeaseType) *VniUpdate {
+func (u *VniUpdate) Next(next string, leaseType LeaseType) *VniUpdate {
 	u.parts = append(u.parts, VniUpdatePart{
 		Key:       EtcdVniNextSuffix,
-		Value:     current,
+		Value:     next,
 		LeaseType: leaseType,
 	})
 	return u
 }
 
-func (u *VniUpdate) OldCounter(counter int, leaseType LeaseType) *VniUpdate {
+func (u *VniUpdate) OldCounter(counter int) *VniUpdate {
 	u.parts = append(u.parts, VniUpdatePart{
 		Key:       EtcdVniCounterSuffix,
 		Value:     strconv.Itoa(counter + 1),
-		LeaseType: leaseType,
+		LeaseType: NoLease,
 	})
-	u.conditions = append(u.conditions, v3.Compare(v3.Value(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(counter)))
+	if counter > 0 {
+		u.conditions = append(u.conditions, v3.Compare(v3.Value(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(counter)))
+	} else {
+		u.conditions = append(u.conditions, v3.Compare(v3.CreateRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", 0))
+	}
 	return u
 }
 
@@ -333,14 +342,29 @@ func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
 func (u *VniUpdate) Run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	ops := make([]v3.Op, len(u.parts))
-	for i, part := range u.parts {
+	ops := make([]v3.Op, 0)
+	l := log.Info()
+	for _, part := range u.parts {
 		leaseOption, err := u.leaseTypeToOption(ctx, part.LeaseType)
 		if err != nil {
 			return err
 		}
-		ops[i] = v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption)
+		ops = append(ops, v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption...))
+
+		if part.Key == EtcdVniTypeSuffix {
+			parsedInt, err := strconv.Atoi(part.Value)
+			if err == nil {
+				l = l.Str("type", stateTypeToString(VniStateType(parsedInt)))
+			}
+		} else if part.Key == EtcdVniCurrentSuffix {
+			l = l.Str("current", part.Value)
+		} else if part.Key == EtcdVniNextSuffix {
+			l = l.Str("next", part.Value)
+		} else if part.Key == EtcdVniCounterSuffix {
+			l = l.Str("counter", part.Value)
+		}
 	}
+	l.Msg("updating vni")
 	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	if err != nil {
 		return errors.Wrap(err, "failed to update vni")

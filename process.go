@@ -38,7 +38,7 @@ func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
 func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
 	if event.State.Type == Unassigned {
 		if leaderState.Node == d.Config.Node {
-			err := d.assignmentStrategy.Unassigned(d, db, leaderState, event.Vni)
+			err := d.assignmentStrategy.Unassigned(d, event.State, leaderState, event.Vni)
 			if err != nil {
 				log.Error().Err(err).Msg("could not assign unassigned vni")
 			}
@@ -46,7 +46,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 	} else if event.State.Type == MigrationDecided {
 		// Acknowledge migration to use our own lease, therefore stop the timer that unassigns the vni
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Type(MigrationAcknowledged).Current(event.State.Current, OldLease).Next(event.State.Next, TempLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationAcknowledged).Current(event.State.Current, OldLease).Next(event.State.Next, TempLease).Run()
 		}
 	} else if event.State.Type == MigrationAcknowledged {
 		if event.State.Next == d.Config.Node {
@@ -60,7 +60,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 					return errors.Wrap(err, "could not advertise ospf")
 				}
 				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).Type(MigrationOspfAdvertised).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+					return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationOspfAdvertised).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 				}})
 				return nil
 			}})
@@ -72,7 +72,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				return errors.Wrap(err, "could not withdraw ospf")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).Type(MigrationOspfWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+				return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationOspfWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 			}})
 		}
 	} else if event.State.Type == MigrationOspfWithdrawn {
@@ -81,7 +81,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not enable arp")
 			}
-			return db.NewVniUpdate(event.Vni).Type(MigrationArpEnabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationArpEnabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 		}
 	} else if event.State.Type == MigrationArpEnabled {
 		if event.State.Current == d.Config.Node {
@@ -89,7 +89,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not disable arp")
 			}
-			return db.NewVniUpdate(event.Vni).Type(MigrationArpDisabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationArpDisabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 		}
 	} else if event.State.Type == MigrationArpDisabled {
 		if event.State.Next == d.Config.Node {
@@ -98,7 +98,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				return errors.Wrap(err, "could not send gratuitous arp")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).Type(MigrationGratuitousArpSent).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+				return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationGratuitousArpSent).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 			}})
 		}
 	} else if event.State.Type == MigrationGratuitousArpSent {
@@ -107,15 +107,15 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not withdraw evpn")
 			}
-			return db.NewVniUpdate(event.Vni).Type(MigrationEvpnWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationEvpnWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
 		}
 	} else if event.State.Type == MigrationEvpnWithdrawn {
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Type(MigrationEvpnWithdrawn).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationEvpnWithdrawn).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
 		}
 	} else if event.State.Type == FailoverDecided {
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Type(FailoverAcknowledged).Current(event.State.Current, OldLease).Next(event.State.Next, NodeLease).Run()
+			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
 		}
 	} else if event.State.Type == FailoverAcknowledged {
 		if event.State.Next == d.Config.Node {
@@ -137,7 +137,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 					return errors.Wrap(err, "could not send gratuitous arp")
 				}
 				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+					return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
 				}})
 				return nil
 			}})
@@ -159,7 +159,11 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 		case <-time.After(d.Config.ScanInterval):
 			if leader.Node == d.Config.Node {
 				for _, vni := range d.Config.Vnis {
-					err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
+					state, err := d.db.GetState(vni, -1)
+					if err != nil {
+						log.Fatal().Err(err).Msg("event-processor: failed to get state")
+					}
+					err = d.assignmentStrategy.Periodical(d, state, leader, vni)
 					if err != nil {
 						log.Error().Err(err).Msg("event-processor: failed to process periodical")
 					}
@@ -169,7 +173,11 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			if leader.Node == d.Config.Node && newNodeEvent.Node != d.Config.Node {
 				log.Info().Str("node", newNodeEvent.Node).Msg("event-processor: new node")
 				for _, vni := range d.Config.Vnis {
-					err := d.assignmentStrategy.Periodical(d, d.db, leader, vni)
+					state, err := d.db.GetState(vni, -1)
+					if err != nil {
+						log.Fatal().Err(err).Msg("event-processor: failed to get state")
+					}
+					err = d.assignmentStrategy.Periodical(d, state, leader, vni)
 					if err != nil {
 						log.Error().Err(err).Msg("event-processor: failed to process new node")
 					}
@@ -182,7 +190,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			}
 		case leader = <-leaderChan:
 			for _, vni := range d.Config.Vnis {
-				state, err := d.db.GetState(vni)
+				state, err := d.db.GetState(vni, -1)
 				if err != nil {
 					log.Fatal().Err(err).Msg("event-processor: failed to get state")
 				}

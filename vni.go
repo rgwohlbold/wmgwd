@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"github.com/rs/zerolog/log"
-	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -30,8 +29,8 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			log.Debug().Msg("vni-watcher: context done")
 			return
 		case e := <-watchChan:
-			kvs := make([]*mvccpb.KeyValue, 0, len(e.Events))
 			vni := InvalidVni
+			revision := int64(0)
 			for _, ev := range e.Events {
 				parsedVni, err := d.db.VniFromKv(ev.Kv)
 				if err != nil {
@@ -39,24 +38,26 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 					continue
 				}
 				if vni != InvalidVni && parsedVni != vni {
-					log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got event for multiple vnis")
+					log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got state for multiple vnis")
 					continue
 				}
 				vni = parsedVni
-				if ev.Type == v3.EventTypePut {
-					kvs = append(kvs, ev.Kv)
+
+				parsedRevision := ev.Kv.ModRevision
+				if revision != 0 && parsedRevision != revision {
+					log.Error().Int64("revision", revision).Int64("parsed-revision", parsedRevision).Msg("vni-watcher: got state for multiple revisions")
+					continue
 				}
+				revision = parsedRevision
 			}
-			if vni == InvalidVni && len(kvs) == 0 {
-				continue
-			}
-			event, err := d.db.VniEventFromKvs(kvs, vni)
+
+			state, err := d.db.GetState(vni, revision)
 			if err != nil {
-				log.Error().Err(err).Msg("vni-watcher: failed to parse vni event")
+				log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
 				continue
 			}
-			log.Debug().Interface("event", event).Msg("vni-watcher: got event")
-			ch <- event
+			log.Debug().Interface("state", state).Msg("vni-watcher: got state")
+			ch <- VniEvent{Vni: vni, State: state}
 		}
 	}
 }

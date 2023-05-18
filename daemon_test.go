@@ -19,9 +19,9 @@ func WipeDatabase(t *testing.T) {
 		t.Errorf("NewDatabase(config) = %v; want nil", err)
 	}
 	defer db.Close()
-	_, err = db.client.Delete(context.Background(), "*", clientv3.WithFromKey())
+	_, err = db.client.Delete(context.Background(), "", clientv3.WithPrefix())
 	if err != nil {
-		t.Errorf("db.client.Delete(context.Background(), \"*\", clientv3.WithFromKey()) = %v; want nil", err)
+		t.Errorf("db.client.Delete(ctx, \"\", clientv3.WithPrefix()) = %v; want nil", err)
 	}
 }
 
@@ -93,7 +93,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 				t.Errorf("NewDatabase(config) = %v; want nil", err)
 			}
 			defer db.Close()
-			state, err := db.GetState(100)
+			state, err := db.GetState(100, -1)
 			if err != nil {
 				t.Errorf("db.GetState(100) = %v; want nil", err)
 			}
