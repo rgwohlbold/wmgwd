@@ -42,7 +42,8 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 		log.Info().Msg("leader-election: campaigning")
 		err = election.Campaign(ctx, d.Config.Node)
 		if err != nil {
-			if err == context.Canceled {
+			// we do not use an own context, so all context errors termination signals
+			if err == context.Canceled || err == context.DeadlineExceeded {
 				goto end
 			}
 			log.Fatal().Err(err).Msg("leader-election: campaign failed")
