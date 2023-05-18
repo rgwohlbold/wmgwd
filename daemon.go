@@ -49,10 +49,7 @@ func (d *Daemon) Register() (func(), error) {
 		if err != nil {
 			log.Error().Msg("could not unregister node")
 		}
-		err = db.Close()
-		if err != nil {
-			log.Error().Msg("could not close database")
-		}
+		db.Close()
 	}
 
 	err = db.Register(d.Config.Node)
