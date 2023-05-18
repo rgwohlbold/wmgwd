@@ -77,6 +77,7 @@ func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, afte
 
 }
 
+// TestSingleDaemon tests that the leader assigns itself to unassigned VNIs on startup
 func TestSingleDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	assertHit := false
@@ -111,6 +112,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	}
 }
 
+// TestTwoDaemonFailover tests that when a non-leader crashes in Idle, the leader takes over
 func TestTwoDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
@@ -120,7 +122,6 @@ func TestTwoDaemonFailover(t *testing.T) {
 	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		// Crash non-leader idle process
 		if !crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			crashed = true
@@ -224,6 +225,7 @@ func TestCrashFailoverDecided(t *testing.T) {
 	}
 }
 
+// TestCrashMigrationDecided tests that after a node crashes when it is assigned in MigrationDecided, the VNI will fail over to the next node.
 func TestCrashMigrationDecided(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
