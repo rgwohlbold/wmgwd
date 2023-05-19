@@ -46,7 +46,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 	} else if event.State.Type == MigrationDecided {
 		// Acknowledge migration to use our own lease, therefore stop the timer that unassigns the vni
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationAcknowledged).Current(event.State.Current, OldLease).Next(event.State.Next, TempLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationAcknowledged).Next(event.State.Next, TempLease).Run()
 		}
 	} else if event.State.Type == MigrationAcknowledged {
 		if event.State.Next == d.Config.Node {
@@ -60,7 +60,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 					return errors.Wrap(err, "could not advertise ospf")
 				}
 				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationOspfAdvertised).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+					return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).Run()
 				}})
 				return nil
 			}})
@@ -72,7 +72,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				return errors.Wrap(err, "could not withdraw ospf")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationOspfWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).Run()
 			}})
 		}
 	} else if event.State.Type == MigrationOspfWithdrawn {
@@ -81,7 +81,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not enable arp")
 			}
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationArpEnabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).Run()
 		}
 	} else if event.State.Type == MigrationArpEnabled {
 		if event.State.Current == d.Config.Node {
@@ -89,7 +89,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not disable arp")
 			}
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationArpDisabled).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).Run()
 		}
 	} else if event.State.Type == MigrationArpDisabled {
 		if event.State.Next == d.Config.Node {
@@ -98,7 +98,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				return errors.Wrap(err, "could not send gratuitous arp")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationGratuitousArpSent).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).Run()
 			}})
 		}
 	} else if event.State.Type == MigrationGratuitousArpSent {
@@ -107,15 +107,18 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if err != nil {
 				return errors.Wrap(err, "could not withdraw evpn")
 			}
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(MigrationEvpnWithdrawn).Current(event.State.Current, OldLease).Next(event.State.Next, OldLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).Run()
 		}
 	} else if event.State.Type == MigrationEvpnWithdrawn {
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
 		}
 	} else if event.State.Type == FailoverDecided {
 		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
+		}
+		if leaderState.Node == d.Config.Node && event.State.Next == "" {
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Run()
 		}
 	} else if event.State.Type == FailoverAcknowledged {
 		if event.State.Next == d.Config.Node {
@@ -137,7 +140,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 					return errors.Wrap(err, "could not send gratuitous arp")
 				}
 				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).OldCounter(event.State.Counter).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
+					return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
 				}})
 				return nil
 			}})

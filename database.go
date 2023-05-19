@@ -39,7 +39,6 @@ type LeaseType int
 const (
 	NodeLease LeaseType = iota
 	TempLease
-	OldLease
 	NoLease
 )
 
@@ -50,10 +49,11 @@ type VniUpdatePart struct {
 }
 
 type VniUpdate struct {
-	vni        uint64
-	db         *Database
-	parts      []VniUpdatePart
-	conditions []v3.Cmp
+	vni         uint64
+	db          *Database
+	parts       []VniUpdatePart
+	conditions  []v3.Cmp
+	hasRevision bool
 }
 
 type VniStateType int
@@ -206,7 +206,7 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 	if err != nil {
 		return VniState{}, err
 	}
-	event, err := db.VniEventFromKvs(resp.Kvs, vni)
+	event, err := db.VniEventFromResponse(resp, vni)
 	if err != nil {
 		return VniState{}, err
 	}
@@ -232,10 +232,10 @@ func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
 	return parsedVni, nil
 }
 
-func (db *Database) VniEventFromKvs(kvs []*mvccpb.KeyValue, inputVni uint64) (VniEvent, error) {
+func (db *Database) VniEventFromResponse(resp *v3.GetResponse, inputVni uint64) (VniEvent, error) {
 	vni := inputVni
-	state := VniState{}
-	for _, kv := range kvs {
+	state := VniState{Revision: resp.Header.Revision}
+	for _, kv := range resp.Kvs {
 		parsedVni, err := db.VniFromKv(kv)
 		if err != nil {
 			return VniEvent{}, err
@@ -256,12 +256,6 @@ func (db *Database) VniEventFromKvs(kvs []*mvccpb.KeyValue, inputVni uint64) (Vn
 			state.Current = string(kv.Value)
 		} else if suffix == EtcdVniNextSuffix {
 			state.Next = string(kv.Value)
-		} else if suffix == EtcdVniCounterSuffix {
-			value, err := strconv.Atoi(string(kv.Value))
-			if err != nil || value < 0 {
-				return VniEvent{}, errors.New("invalid counter")
-			}
-			state.Counter = value
 		} else {
 			return VniEvent{}, errors.New("invalid suffix")
 		}
@@ -285,8 +279,6 @@ func (u *VniUpdate) leaseTypeToOption(ctx context.Context, leaseType LeaseType) 
 			return nil, errors.Wrap(err, "could not grant lease")
 		}
 		return []v3.OpOption{v3.WithLease(resp.ID)}, nil
-	} else if leaseType == OldLease {
-		return []v3.OpOption{v3.WithIgnoreLease()}, nil
 	} else if leaseType == NoLease {
 		return []v3.OpOption{}, nil
 	}
@@ -320,17 +312,9 @@ func (u *VniUpdate) Next(next string, leaseType LeaseType) *VniUpdate {
 	return u
 }
 
-func (u *VniUpdate) OldCounter(counter int) *VniUpdate {
-	u.parts = append(u.parts, VniUpdatePart{
-		Key:       EtcdVniCounterSuffix,
-		Value:     strconv.Itoa(counter + 1),
-		LeaseType: NoLease,
-	})
-	if counter > 0 {
-		u.conditions = append(u.conditions, v3.Compare(v3.Value(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", strconv.Itoa(counter)))
-	} else {
-		u.conditions = append(u.conditions, v3.Compare(v3.CreateRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniCounterSuffix), "=", 0))
-	}
+func (u *VniUpdate) Revision(revision int64) *VniUpdate {
+	u.conditions = append(u.conditions, v3.Compare(v3.ModRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniTypeSuffix), "<", revision+1))
+	u.hasRevision = true
 	return u
 }
 
@@ -340,6 +324,9 @@ func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
 }
 
 func (u *VniUpdate) Run() error {
+	if !u.hasRevision {
+		panic(errors.New("revision not set"))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 	ops := make([]v3.Op, 0)

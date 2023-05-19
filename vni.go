@@ -7,10 +7,10 @@ import (
 )
 
 type VniState struct {
-	Type    VniStateType
-	Current string
-	Next    string
-	Counter int
+	Type     VniStateType
+	Current  string
+	Next     string
+	Revision int64
 }
 
 type VniEvent struct {
@@ -49,6 +49,10 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 					continue
 				}
 				revision = parsedRevision
+			}
+			if vni == InvalidVni {
+				log.Error().Msg("vni-watcher: got event for no vnis")
+				continue
 			}
 
 			state, err := d.db.GetState(vni, revision)
