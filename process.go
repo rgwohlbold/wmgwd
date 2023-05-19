@@ -36,115 +36,111 @@ func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
 }
 
 func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
-	if event.State.Type == Unassigned {
-		if leaderState.Node == d.Config.Node {
+	state := event.State.Type
+	current := event.State.Current
+	next := event.State.Next
+	isCurrent := current == d.Config.Node
+	isNext := next == d.Config.Node
+	isLeader := leaderState.Node == d.Config.Node
+
+	// Failure detection and assignment
+	if isLeader {
+		if state == Unassigned {
 			err := d.assignmentStrategy.Unassigned(d, event.State, leaderState, event.Vni)
 			if err != nil {
 				log.Error().Err(err).Msg("could not assign unassigned vni")
 			}
+		} else {
+			// All states except Unassigned and Idle need "Next"
+			if next == "" && state != Idle {
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
+			}
+			// All states except Unassigned, FailoverDecided, FailoverAcknowledged need "Current"
+			if current == "" && state != Unassigned && state != FailoverDecided && state != FailoverAcknowledged {
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
+			}
 		}
-	} else if event.State.Type == MigrationDecided {
+	}
+
+	if state == MigrationDecided && isNext {
 		// Acknowledge migration to use our own lease, therefore stop the timer that unassigns the vni
-		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationAcknowledged).Next(event.State.Next, TempLease).Run()
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationAcknowledged).Next(event.State.Next, NodeLease).Run()
+	} else if state == MigrationAcknowledged && isNext {
+		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not advertise evpn")
 		}
-	} else if event.State.Type == MigrationAcknowledged {
-		if event.State.Next == d.Config.Node {
-			err := d.networkStrategy.AdvertiseEvpn(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not advertise evpn")
-			}
-			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				err = d.networkStrategy.AdvertiseOspf(event.Vni)
-				if err != nil {
-					return errors.Wrap(err, "could not advertise ospf")
-				}
-				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).Run()
-				}})
-				return nil
-			}})
-		}
-	} else if event.State.Type == MigrationOspfAdvertised {
-		if event.State.Current == d.Config.Node {
-			err := d.networkStrategy.WithdrawOspf(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not withdraw ospf")
-			}
-			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).Run()
-			}})
-		}
-	} else if event.State.Type == MigrationOspfWithdrawn {
-		if event.State.Next == d.Config.Node {
-			err := d.networkStrategy.EnableArp(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not enable arp")
-			}
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).Run()
-		}
-	} else if event.State.Type == MigrationArpEnabled {
-		if event.State.Current == d.Config.Node {
-			err := d.networkStrategy.DisableArp(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not disable arp")
-			}
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).Run()
-		}
-	} else if event.State.Type == MigrationArpDisabled {
-		if event.State.Next == d.Config.Node {
-			err := d.networkStrategy.SendGratuitousArp(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not send gratuitous arp")
-			}
-			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).Run()
-			}})
-		}
-	} else if event.State.Type == MigrationGratuitousArpSent {
-		if event.State.Current == d.Config.Node {
-			err := d.networkStrategy.WithdrawEvpn(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not withdraw evpn")
-			}
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).Run()
-		}
-	} else if event.State.Type == MigrationEvpnWithdrawn {
-		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
-		}
-	} else if event.State.Type == FailoverDecided {
-		if event.State.Next == d.Config.Node {
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
-		}
-		if leaderState.Node == d.Config.Node && event.State.Next == "" {
-			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Run()
-		}
-	} else if event.State.Type == FailoverAcknowledged {
-		if event.State.Next == d.Config.Node {
-			err := d.networkStrategy.AdvertiseEvpn(event.Vni)
-			if err != nil {
-				return errors.Wrap(err, "could not advertise evpn")
-			}
+		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
 			err = d.networkStrategy.AdvertiseOspf(event.Vni)
 			if err != nil {
 				return errors.Wrap(err, "could not advertise ospf")
 			}
-			err = d.networkStrategy.EnableArp(event.Vni)
+			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).Run()
+			}})
+			return nil
+		}})
+	} else if state == MigrationOspfAdvertised && isCurrent {
+		err := d.networkStrategy.WithdrawOspf(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not withdraw ospf")
+		}
+		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).Run()
+		}})
+	} else if state == MigrationOspfWithdrawn && isNext {
+		err := d.networkStrategy.EnableArp(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not enable arp")
+		}
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).Run()
+	} else if state == MigrationArpEnabled && isCurrent {
+		err := d.networkStrategy.DisableArp(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not disable arp")
+		}
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).Run()
+	} else if state == MigrationArpDisabled && isNext {
+		err := d.networkStrategy.SendGratuitousArp(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not send gratuitous arp")
+		}
+		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
+			return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).Run()
+		}})
+	} else if state == MigrationGratuitousArpSent && isCurrent {
+		err := d.networkStrategy.WithdrawEvpn(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not withdraw evpn")
+		}
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).Run()
+	} else if state == MigrationEvpnWithdrawn && isNext {
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+	} else if state == FailoverDecided && isNext {
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
+	} else if state == FailoverAcknowledged && isNext {
+		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not advertise evpn")
+		}
+		err = d.networkStrategy.AdvertiseOspf(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not advertise ospf")
+		}
+		err = d.networkStrategy.EnableArp(event.Vni)
+		if err != nil {
+			return errors.Wrap(err, "could not enable arp")
+		}
+		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
+			err = d.networkStrategy.SendGratuitousArp(event.Vni)
 			if err != nil {
-				return errors.Wrap(err, "could not enable arp")
+				return errors.Wrap(err, "could not send gratuitous arp")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-				err = d.networkStrategy.SendGratuitousArp(event.Vni)
-				if err != nil {
-					return errors.Wrap(err, "could not send gratuitous arp")
-				}
-				d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() error {
-					return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
-				}})
-				return nil
+				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
 			}})
-		}
+			return nil
+		}})
 	}
 	return nil
 }

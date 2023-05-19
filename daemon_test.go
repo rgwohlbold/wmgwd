@@ -259,8 +259,7 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 		defer lock.Unlock()
 		if leaderAssignedItself && !firstMigrationCrashed &&
 			e.State.Type == stateType &&
-			(crashType == CrashNext && e.State.Next == d.Config.Node || crashType == CrashCurrent && e.State.Current == d.Config.Node) &&
-			s.Node != d.Config.Node {
+			(crashType == CrashNext && e.State.Next == d.Config.Node || crashType == CrashCurrent && e.State.Current == d.Config.Node) {
 			log.Info().Msg("first migration crashed")
 			firstMigrationCrashed = true
 			return VerdictStop
