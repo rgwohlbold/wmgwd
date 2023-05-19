@@ -112,7 +112,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 		}
 		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).Run()
 	} else if state == MigrationEvpnWithdrawn && isNext {
-		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
+		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
 	} else if state == FailoverDecided && isNext {
 		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
