@@ -235,10 +235,6 @@ func TestCrashFailoverDecided(t *testing.T) {
 	SubTestCrashFailoverDecided(t, FailoverDecided)
 }
 
-func TestCrashFailoverAcknowledged(t *testing.T) {
-	SubTestCrashFailoverDecided(t, FailoverAcknowledged)
-}
-
 type CrashType int
 
 const (
@@ -297,10 +293,6 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 
 func TestCrashNextMigrationDecided(t *testing.T) {
 	SubTestCrashMigrationDecided(t, MigrationDecided, CrashNext)
-}
-
-func TestCrashNextMigrationAcknowledged(t *testing.T) {
-	SubTestCrashMigrationDecided(t, MigrationAcknowledged, CrashNext)
 }
 
 func TestCrashCurrentMigrationOspfAdvertised(t *testing.T) {

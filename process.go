@@ -55,17 +55,14 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			if next == "" && state != Idle {
 				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
 			}
-			// All states except Unassigned, FailoverDecided, FailoverAcknowledged need "Current"
-			if current == "" && state != Unassigned && state != FailoverDecided && state != FailoverAcknowledged {
+			// All states except Unassigned, FailoverDecided need "Current"
+			if current == "" && state != Unassigned && state != FailoverDecided {
 				return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
 			}
 		}
 	}
 
 	if state == MigrationDecided && isNext {
-		// Acknowledge migration to use our own lease, therefore stop the timer that unassigns the vni
-		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationAcknowledged).Next(event.State.Next, NodeLease).Run()
-	} else if state == MigrationAcknowledged && isNext {
 		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise evpn")
@@ -117,8 +114,6 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 	} else if state == MigrationEvpnWithdrawn && isNext {
 		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NodeLease).Run()
 	} else if state == FailoverDecided && isNext {
-		return db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(FailoverAcknowledged).Current("", NoLease).Next(event.State.Next, NodeLease).Run()
-	} else if state == FailoverAcknowledged && isNext {
 		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise evpn")

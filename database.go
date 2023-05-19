@@ -14,8 +14,6 @@ import (
 const EtcdTimeout = 500 * time.Second
 const EtcdLeaseTTL = 5
 
-const EtcdAckTimeout = 1 * time.Second
-
 const EtcdVniPrefix = "/wmgwd/vni"
 
 const EtcdVniTypeSuffix = "type"
@@ -68,7 +66,6 @@ const (
 	Unassigned VniStateType = iota
 	Idle
 	MigrationDecided
-	MigrationAcknowledged
 	MigrationOspfAdvertised
 	MigrationOspfWithdrawn
 	MigrationArpEnabled
@@ -76,7 +73,6 @@ const (
 	MigrationGratuitousArpSent
 	MigrationEvpnWithdrawn
 	FailoverDecided
-	FailoverAcknowledged
 	NumStateTypes
 )
 
@@ -182,8 +178,6 @@ func stateTypeToString(state VniStateType) string {
 		return "idle"
 	case MigrationDecided:
 		return "migration-decided"
-	case MigrationAcknowledged:
-		return "migration-acknowledged"
 	case MigrationOspfAdvertised:
 		return "migration-ospf-advertised"
 	case MigrationOspfWithdrawn:
@@ -198,8 +192,6 @@ func stateTypeToString(state VniStateType) string {
 		return "migration-evpn-withdrawn"
 	case FailoverDecided:
 		return "failover-decided"
-	case FailoverAcknowledged:
-		return "failover-acknowledged"
 	default:
 		return "unknown"
 	}
