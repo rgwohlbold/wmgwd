@@ -32,18 +32,26 @@ type Database struct {
 	cancelKeepalive context.CancelFunc
 }
 
-type LeaseType int
+type VniLease struct {
+	Type  VniLeaseType
+	Lease v3.LeaseID
+}
+
+var NodeLease = VniLease{Type: NodeLeaseType}
+var NoLease = VniLease{Type: NoLeaseType}
+
+type VniLeaseType int
 
 const (
-	NodeLease LeaseType = iota
-	TempLease
-	NoLease
+	NodeLeaseType VniLeaseType = iota
+	AttachedLeaseType
+	NoLeaseType
 )
 
 type VniUpdatePart struct {
-	Key       string
-	Value     string
-	LeaseType LeaseType
+	Key   string
+	Value string
+	Lease VniLease
 }
 
 type VniUpdate struct {
@@ -128,7 +136,12 @@ func (db *Database) Close() {
 	}
 }
 
-func (db *Database) Nodes() ([]string, error) {
+type Node struct {
+	Name  string
+	Lease v3.LeaseID
+}
+
+func (db *Database) Nodes() ([]Node, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 
@@ -137,9 +150,9 @@ func (db *Database) Nodes() ([]string, error) {
 		return nil, errors.Wrap(err, "could not get from etcd")
 	}
 
-	nodes := make([]string, 0)
-	for _, kv := range resp.Kvs {
-		nodes = append(nodes, strings.TrimPrefix(string(kv.Key), EtcdNodePrefix))
+	nodes := make([]Node, len(resp.Kvs))
+	for i, kv := range resp.Kvs {
+		nodes[i] = Node{Name: string(kv.Value), Lease: v3.LeaseID(kv.Lease)}
 	}
 
 	return nodes, nil
@@ -244,44 +257,40 @@ func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
 	return &VniUpdate{db: db, vni: vni}
 }
 
-func (u *VniUpdate) leaseTypeToOption(ctx context.Context, leaseType LeaseType) ([]v3.OpOption, error) {
-	if leaseType == NodeLease {
+func (u *VniUpdate) leaseTypeToOption(lease VniLease) ([]v3.OpOption, error) {
+	if lease == NodeLease {
 		return []v3.OpOption{v3.WithLease(u.db.lease)}, nil
-	} else if leaseType == TempLease {
-		resp, err := u.db.client.Grant(ctx, int64(EtcdAckTimeout/time.Second))
-		if err != nil {
-			return nil, errors.Wrap(err, "could not grant lease")
-		}
-		return []v3.OpOption{v3.WithLease(resp.ID)}, nil
-	} else if leaseType == NoLease {
+	} else if lease == NoLease {
 		return []v3.OpOption{}, nil
+	} else if lease.Type == AttachedLeaseType {
+		return []v3.OpOption{v3.WithLease(lease.Lease)}, nil
 	}
 	return nil, errors.New("invalid lease type")
 }
 
 func (u *VniUpdate) Type(stateType VniStateType) *VniUpdate {
 	u.parts = append(u.parts, VniUpdatePart{
-		Key:       EtcdVniTypeSuffix,
-		Value:     strconv.Itoa(int(stateType)),
-		LeaseType: NodeLease,
+		Key:   EtcdVniTypeSuffix,
+		Value: strconv.Itoa(int(stateType)),
+		Lease: NodeLease,
 	})
 	return u
 }
 
-func (u *VniUpdate) Current(current string, leaseType LeaseType) *VniUpdate {
+func (u *VniUpdate) Current(current string, leaseType VniLease) *VniUpdate {
 	u.parts = append(u.parts, VniUpdatePart{
-		Key:       EtcdVniCurrentSuffix,
-		Value:     current,
-		LeaseType: leaseType,
+		Key:   EtcdVniCurrentSuffix,
+		Value: current,
+		Lease: leaseType,
 	})
 	return u
 }
 
-func (u *VniUpdate) Next(next string, leaseType LeaseType) *VniUpdate {
+func (u *VniUpdate) Next(next string, lease VniLease) *VniUpdate {
 	u.parts = append(u.parts, VniUpdatePart{
-		Key:       EtcdVniNextSuffix,
-		Value:     next,
-		LeaseType: leaseType,
+		Key:   EtcdVniNextSuffix,
+		Value: next,
+		Lease: lease,
 	})
 	return u
 }
@@ -301,12 +310,10 @@ func (u *VniUpdate) Run() error {
 	if !u.hasRevision {
 		panic(errors.New("revision not set"))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	defer cancel()
 	ops := make([]v3.Op, 0)
 	l := log.Info()
 	for _, part := range u.parts {
-		leaseOption, err := u.leaseTypeToOption(ctx, part.LeaseType)
+		leaseOption, err := u.leaseTypeToOption(part.Lease)
 		if err != nil {
 			return err
 		}
@@ -324,6 +331,8 @@ func (u *VniUpdate) Run() error {
 		}
 	}
 	l.Msg("updating vni")
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
 	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	if err != nil {
 		return errors.Wrap(err, "failed to update vni")
