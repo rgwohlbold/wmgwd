@@ -36,7 +36,7 @@ func (i TimerEventIngestor) Enqueue(timeout time.Duration, event TimerEvent) {
 }
 
 func (i TimerEventIngestor) Ingest(ctx context.Context, _ *Daemon, eventChan chan<- TimerEvent, setupChan chan<- struct{}) {
-	// the ingestor listens for events instantly, since newTimerChan is blocking
+	// the ingestor listens for events instantly, since newTimerChan enqueues them
 	setupChan <- struct{}{}
 
 	timers := make([]chan TimerEvent, 0)
