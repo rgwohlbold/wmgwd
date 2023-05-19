@@ -204,17 +204,27 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 	if err != nil {
 		return VniState{}, err
 	}
-	event, err := db.VniEventFromResponse(resp, vni)
-	if err != nil {
-		return VniState{}, err
+	state := VniState{Revision: resp.Header.Revision}
+	for _, kv := range resp.Kvs {
+		suffix := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/")
+		if suffix == EtcdVniTypeSuffix {
+			value, err := strconv.Atoi(string(kv.Value))
+			if err != nil || value < 0 || value >= int(NumStateTypes) {
+				return VniState{}, errors.New("invalid state type")
+			}
+			state.Type = VniStateType(value)
+		} else if suffix == EtcdVniCurrentSuffix {
+			state.Current = string(kv.Value)
+		} else if suffix == EtcdVniNextSuffix {
+			state.Next = string(kv.Value)
+		} else {
+			return VniState{}, errors.New("invalid suffix")
+		}
 	}
-	return event.State, nil
+	return state, nil
 }
 
-const InvalidVni = ^uint64(0)
-
 var InvalidKey = errors.New("invalid key")
-var InvalidValue = errors.New("invalid value")
 
 func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
 	keyRest := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/")
@@ -228,40 +238,6 @@ func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
 		return 0, InvalidKey
 	}
 	return parsedVni, nil
-}
-
-func (db *Database) VniEventFromResponse(resp *v3.GetResponse, inputVni uint64) (VniEvent, error) {
-	vni := inputVni
-	state := VniState{Revision: resp.Header.Revision}
-	for _, kv := range resp.Kvs {
-		parsedVni, err := db.VniFromKv(kv)
-		if err != nil {
-			return VniEvent{}, err
-		}
-		if vni != InvalidVni && parsedVni != vni {
-			return VniEvent{}, errors.New("vni mismatch between kvs")
-		}
-		vni = parsedVni
-
-		suffix := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/")
-		if suffix == EtcdVniTypeSuffix {
-			value, err := strconv.Atoi(string(kv.Value))
-			if err != nil || value < 0 || value >= int(NumStateTypes) {
-				return VniEvent{}, errors.New("invalid state type")
-			}
-			state.Type = VniStateType(value)
-		} else if suffix == EtcdVniCurrentSuffix {
-			state.Current = string(kv.Value)
-		} else if suffix == EtcdVniNextSuffix {
-			state.Next = string(kv.Value)
-		} else {
-			return VniEvent{}, errors.New("invalid suffix")
-		}
-	}
-	if vni == InvalidVni {
-		return VniEvent{}, errors.New("no vni found")
-	}
-	return VniEvent{Vni: vni, State: state}, nil
 }
 
 func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {

@@ -20,6 +20,8 @@ type VniEvent struct {
 
 type VniEventIngestor struct{}
 
+const InvalidVni = ^uint64(0)
+
 func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEvent, setupChan chan<- struct{}) {
 	watchChan := d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 	setupChan <- struct{}{}
