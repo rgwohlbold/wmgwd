@@ -62,14 +62,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
-	//ctx, cancel := context.WithCancel(context.Background())
-	//go func() {
-	//	signalChan := make(chan os.Signal)
-	//	signal.Notify(signalChan, os.Interrupt)
-	//	<-signalChan
-	//	cancel()
-	//}()
-
 	leaderChan := make(chan LeaderState)
 	vniChan := make(chan VniEvent, len(d.Config.Vnis))
 	newNodeChan := make(chan NewNodeEvent)
