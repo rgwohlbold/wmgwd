@@ -21,8 +21,6 @@ const EtcdVniPrefix = "/wmgwd/vni"
 const EtcdVniTypeSuffix = "type"
 const EtcdVniCurrentSuffix = "current"
 const EtcdVniNextSuffix = "next"
-const EtcdVniCounterSuffix = "counter"
-
 const EtcdNodePrefix = "/wmgwd/node/"
 
 const EtcdLeaderPrefix = "/wmgwd/leader/"
@@ -347,8 +345,6 @@ func (u *VniUpdate) Run() error {
 			l = l.Str("current", part.Value)
 		} else if part.Key == EtcdVniNextSuffix {
 			l = l.Str("next", part.Value)
-		} else if part.Key == EtcdVniCounterSuffix {
-			l = l.Str("counter", part.Value)
 		}
 	}
 	l.Msg("updating vni")
