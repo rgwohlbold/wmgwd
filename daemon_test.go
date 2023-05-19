@@ -186,8 +186,8 @@ func TestMigration(t *testing.T) {
 	}
 }
 
-// SubTestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided or FailoverAcknowledged, the VNI will fail over to the next node.
-func SubTestCrashFailoverDecided(t *testing.T, stateType VniStateType) {
+// TestCrashFailoverDecided tests that after a node crashes when it is assigned in FailoverDecided, the VNI will fail over to the next node.
+func TestCrashFailoverDecided(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
 	firstIdleCrashed := false
@@ -198,7 +198,7 @@ func SubTestCrashFailoverDecided(t *testing.T, stateType VniStateType) {
 		lock.Lock()
 		defer lock.Unlock()
 
-		if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == stateType && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+		if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
 			// Second non-leader process crashes in FailoverDecided
 			secondFailoverCrashed = true
 			return VerdictStop
@@ -229,10 +229,6 @@ func SubTestCrashFailoverDecided(t *testing.T, stateType VniStateType) {
 	if !thirdReachesIdle {
 		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
 	}
-}
-
-func TestCrashFailoverDecided(t *testing.T) {
-	SubTestCrashFailoverDecided(t, FailoverDecided)
 }
 
 type CrashType int
