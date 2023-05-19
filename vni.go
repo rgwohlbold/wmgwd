@@ -32,7 +32,7 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			return
 		case e := <-watchChan:
 			vni := InvalidVni
-			revision := int64(0)
+			revision := e.Header.Revision
 			for _, ev := range e.Events {
 				parsedVni, err := d.db.VniFromKv(ev.Kv)
 				if err != nil {
@@ -44,13 +44,6 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 					continue
 				}
 				vni = parsedVni
-
-				parsedRevision := ev.Kv.ModRevision
-				if revision != 0 && parsedRevision != revision {
-					log.Error().Int64("revision", revision).Int64("parsed-revision", parsedRevision).Msg("vni-watcher: got state for multiple revisions")
-					continue
-				}
-				revision = parsedRevision
 			}
 			if vni == InvalidVni {
 				log.Error().Msg("vni-watcher: got event for no vnis")
