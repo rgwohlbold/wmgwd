@@ -103,7 +103,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 			if state.Current != d.Config.Node {
 				t.Errorf("state.Current = %v; want %v", state.Current, d.Config.Node)
 			}
-			return VerdictStop
+			return VerdictContinue
 		}
 		return VerdictContinue
 	})

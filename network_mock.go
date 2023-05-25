@@ -5,6 +5,7 @@ type MockNetworkStrategy struct {
 	evpnAdvertised map[uint64]bool
 	arpEnabled     map[uint64]bool
 	gratuitousArp  map[uint64]int
+	lastBytes      *uint64
 }
 
 func NewMockNetworkStrategy() *MockNetworkStrategy {
@@ -13,6 +14,7 @@ func NewMockNetworkStrategy() *MockNetworkStrategy {
 		evpnAdvertised: make(map[uint64]bool),
 		arpEnabled:     make(map[uint64]bool),
 		gratuitousArp:  make(map[uint64]int),
+		lastBytes:      new(uint64),
 	}
 }
 
@@ -52,5 +54,6 @@ func (s MockNetworkStrategy) SendGratuitousArp(vni uint64) error {
 }
 
 func (s MockNetworkStrategy) ByteCounter(_ uint64) (uint64, error) {
-	return 5, nil
+	*s.lastBytes += 1
+	return *s.lastBytes, nil
 }

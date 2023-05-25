@@ -9,11 +9,10 @@ import (
 const ReportInterval = 5 * time.Second
 
 type Reporter struct {
-	Previous map[uint64]uint64
 }
 
 func NewReporter() *Reporter {
-	return &Reporter{Previous: make(map[uint64]uint64)}
+	return &Reporter{}
 }
 
 func (r *Reporter) Report(d *Daemon) error {
@@ -23,24 +22,16 @@ func (r *Reporter) Report(d *Daemon) error {
 	}
 	for vni, state := range states {
 		if state.Type != Idle || state.Current != d.Config.Node {
-			r.Previous[vni] = 0
 			continue
 		}
 		var newReport uint64
 		newReport, err = d.networkStrategy.ByteCounter(vni)
 		if err != nil {
-			r.Previous[vni] = 0
 			log.Error().Err(err).Msg("reporter: failed to get byte counter")
-			continue
-		}
-		previousReport := r.Previous[vni]
-		if previousReport == 0 {
-			r.Previous[vni] = newReport
 			continue
 		}
 		err = d.db.NewVniUpdate(vni).Revision(state.Revision).Report(newReport).Run()
 		if err != nil {
-			r.Previous[vni] = 0
 			log.Error().Err(err).Msg("reporter: failed to update report")
 			continue
 		}
