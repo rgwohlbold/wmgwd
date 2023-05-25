@@ -95,6 +95,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		wg.Done()
 	}()
+	wg.Add(1)
+	go func() {
+		err := NewReporter().Start(ctx, d)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to run reporter")
+		}
+		wg.Done()
+	}()
 
 	err = d.db.Register(d.Config.Node)
 	if err != nil {

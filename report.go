@@ -1,0 +1,66 @@
+package main
+
+import (
+	"context"
+	"github.com/rs/zerolog/log"
+	"time"
+)
+
+const ReportInterval = 5 * time.Second
+
+type Reporter struct {
+	Previous map[uint64]uint64
+}
+
+func NewReporter() *Reporter {
+	return &Reporter{Previous: make(map[uint64]uint64)}
+}
+
+func (r *Reporter) Report(d *Daemon) error {
+	states, err := d.db.GetFullState(d.Config, -1)
+	if err != nil {
+		return err
+	}
+	for vni, state := range states {
+		if state.Type != Idle || state.Current != d.Config.Node {
+			r.Previous[vni] = 0
+			continue
+		}
+		var newReport uint64
+		newReport, err = d.networkStrategy.ByteCounter(vni)
+		if err != nil {
+			r.Previous[vni] = 0
+			log.Error().Err(err).Msg("reporter: failed to get byte counter")
+			continue
+		}
+		previousReport := r.Previous[vni]
+		if previousReport == 0 {
+			r.Previous[vni] = newReport
+			continue
+		}
+		err = d.db.NewVniUpdate(vni).Revision(state.Revision).Report(newReport).Run()
+		if err != nil {
+			r.Previous[vni] = 0
+			log.Error().Err(err).Msg("reporter: failed to update report")
+			continue
+		}
+	}
+	return nil
+}
+
+func (r *Reporter) Start(ctx context.Context, d *Daemon) error {
+	ticker := time.NewTicker(ReportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			log.Debug().Msg("reporter: reporting")
+			err := r.Report(d)
+			if err != nil {
+				return err
+			}
+		}
+	}
+}

@@ -23,6 +23,10 @@ func NewSystemNetworkStrategy() *SystemNetworkStrategy {
 	}
 }
 
+func (s *SystemNetworkStrategy) bridgeName(vni uint64) string {
+	return "br" + strconv.FormatUint(vni, 10)
+}
+
 func (s *SystemNetworkStrategy) vtysh(commands []string) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -70,10 +74,9 @@ func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 
 func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
 	log.Info().Msg("advertising ospf")
-	ospfInterface := "br" + strconv.FormatUint(vni, 10)
 	return s.vtysh([]string{
 		"configure terminal",
-		"interface " + ospfInterface,
+		"interface " + s.bridgeName(vni),
 		"no ospf cost",
 		"exit", // interface,
 		"exit", // configure terminal
@@ -83,10 +86,9 @@ func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
 
 func (s *SystemNetworkStrategy) WithdrawOspf(vni uint64) error {
 	log.Info().Msg("withdrawing ospf")
-	ospfInterface := "br" + strconv.FormatUint(vni, 10)
 	return s.vtysh([]string{
 		"configure terminal",
-		"interface " + ospfInterface,
+		"interface " + s.bridgeName(vni),
 		"ospf cost 65535",
 		"exit", // interface,
 		"exit", // configure terminal
@@ -100,16 +102,16 @@ func writeSysctl(key string, value string) error {
 }
 
 func (s *SystemNetworkStrategy) EnableArp(vni uint64) error {
-	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "0")
+	return writeSysctl("net.ipv4.conf."+s.bridgeName(vni)+".arp_ignore", "0")
 }
 
 func (s *SystemNetworkStrategy) DisableArp(vni uint64) error {
-	return writeSysctl("net.ipv4.conf.br"+strconv.FormatUint(vni, 10)+".arp_ignore", "3")
+	return writeSysctl("net.ipv4.conf."+s.bridgeName(vni)+".arp_ignore", "3")
 }
 
 func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
 	log.Info().Uint64("vni", vni).Msg("sending gratuitous arp")
-	iface, err := net.InterfaceByName("br" + strconv.FormatUint(vni, 10))
+	iface, err := net.InterfaceByName(s.bridgeName(vni))
 	if err != nil {
 		return errors.Wrap(err, "could not get interface")
 	}
@@ -144,4 +146,12 @@ func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
 		}
 	}
 	return nil
+}
+
+func (s *SystemNetworkStrategy) ByteCounter(vni uint64) (uint64, error) {
+	res, err := os.ReadFile("/sys/class/net/" + s.bridgeName(vni) + "/statistics/tx_bytes")
+	if err != nil {
+		return 0, errors.Wrap(err, "could not read tx_bytes")
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(res)), 10, 64)
 }

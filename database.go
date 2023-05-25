@@ -19,6 +19,7 @@ const EtcdVniPrefix = "/wmgwd/vni"
 const EtcdVniTypeSuffix = "type"
 const EtcdVniCurrentSuffix = "current"
 const EtcdVniNextSuffix = "next"
+const EtcdVniReportSuffix = "report"
 const EtcdNodePrefix = "/wmgwd/node/"
 
 const EtcdLeaderPrefix = "/wmgwd/leader/"
@@ -197,6 +198,52 @@ func stateTypeToString(state VniStateType) string {
 	}
 }
 
+func (db *Database) GetFullState(config Configuration, revision int64) (map[uint64]*VniState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+
+	ops := []v3.OpOption{v3.WithPrefix()}
+	if revision != -1 {
+		ops = append(ops, v3.WithRev(revision))
+	}
+
+	resp, err := db.client.Get(ctx, EtcdVniPrefix+"/", ops...)
+	if err != nil {
+		return nil, err
+	}
+	states := make(map[uint64]*VniState)
+	for _, vni := range config.Vnis {
+		states[vni] = &VniState{Type: Unassigned}
+	}
+	for _, kv := range resp.Kvs {
+		keyVni, err := db.VniFromKv(kv)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not get keyVni from kv")
+		}
+		suffix := strings.TrimPrefix(string(kv.Key), EtcdVniPrefix+"/"+strconv.FormatUint(keyVni, 10)+"/")
+		if suffix == EtcdVniTypeSuffix {
+			value, err := strconv.Atoi(string(kv.Value))
+			if err != nil || value < 0 || value >= int(NumStateTypes) {
+				return nil, errors.New("invalid state type")
+			}
+			states[keyVni].Type = VniStateType(value)
+		} else if suffix == EtcdVniCurrentSuffix {
+			states[keyVni].Current = string(kv.Value)
+		} else if suffix == EtcdVniNextSuffix {
+			states[keyVni].Next = string(kv.Value)
+		} else if suffix == EtcdVniReportSuffix {
+			// ignore
+		} else {
+			return nil, errors.New("invalid suffix")
+		}
+	}
+	for _, vni := range config.Vnis {
+		states[vni].Revision = resp.Header.Revision
+	}
+	return states, nil
+
+}
+
 func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
@@ -222,6 +269,8 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 			state.Current = string(kv.Value)
 		} else if suffix == EtcdVniNextSuffix {
 			state.Next = string(kv.Value)
+		} else if suffix == EtcdVniReportSuffix {
+			// ignore
 		} else {
 			return VniState{}, errors.New("invalid suffix")
 		}
@@ -287,6 +336,15 @@ func (u *VniUpdate) Next(next string, lease VniLease) *VniUpdate {
 	return u
 }
 
+func (u *VniUpdate) Report(report uint64) *VniUpdate {
+	u.parts = append(u.parts, VniUpdatePart{
+		Key:   EtcdVniReportSuffix,
+		Value: strconv.FormatUint(report, 10),
+		Lease: NodeLease,
+	})
+	return u
+}
+
 func (u *VniUpdate) Revision(revision int64) *VniUpdate {
 	u.conditions = append(u.conditions, v3.Compare(v3.ModRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniTypeSuffix), "<", revision+1))
 	u.hasRevision = true
@@ -320,6 +378,11 @@ func (u *VniUpdate) Run() error {
 			l = l.Str("current", part.Value)
 		} else if part.Key == EtcdVniNextSuffix {
 			l = l.Str("next", part.Value)
+		} else if part.Key == EtcdVniReportSuffix {
+			parsedUint, err := strconv.ParseUint(part.Value, 10, 64)
+			if err == nil {
+				l = l.Uint64("report", parsedUint)
+			}
 		}
 	}
 	l.Msg("updating vni")

@@ -183,12 +183,12 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				log.Fatal().Err(err).Msg("event-processor: failed to process event")
 			}
 		case leader = <-leaderChan:
-			for _, vni := range d.Config.Vnis {
-				state, err := d.db.GetState(vni, -1)
-				if err != nil {
-					log.Fatal().Err(err).Msg("event-processor: failed to get state")
-				}
-				vniChan <- VniEvent{Vni: vni, State: state}
+			states, err := d.db.GetFullState(d.Config, -1)
+			if err != nil {
+				log.Fatal().Err(err).Msg("event-processor: failed to get full state")
+			}
+			for vni, state := range states {
+				vniChan <- VniEvent{Vni: vni, State: *state}
 			}
 		case timerEvent := <-timerChan:
 			err := timerEvent.Func()
