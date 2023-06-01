@@ -1,51 +1,71 @@
 package main
 
+import (
+	"github.com/rs/zerolog/log"
+)
+
+type AssignmentType int
+
+const (
+	Migration AssignmentType = iota
+	Failover
+)
+
+type Assignment struct {
+	Vni   uint64
+	State VniState
+	Type  AssignmentType
+	Next  Node
+}
+
 type AssignmentStrategy interface {
-	Assign(d *Daemon, leaderState LeaderState, nodes []Node, state map[uint64]*VniState) error
+	Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment
 }
 
 type AssignSelf struct{}
 
-func (_ AssignSelf) Assign(d *Daemon, leaderState LeaderState, _ []Node, state map[uint64]*VniState) error {
-	for vni, vniState := range state {
-		if vniState.Type == Unassigned {
-			return d.db.NewVniUpdate(vni).Revision(vniState.Revision).LeaderState(leaderState).Type(FailoverDecided).Current("", NoLease).Next(d.Config.Node, VniLease{AttachedLeaseType, d.db.lease}).Run()
-		} else if vniState.Type == Idle && vniState.Current != d.Config.Node {
-			return d.db.NewVniUpdate(vni).Revision(vniState.Revision).LeaderState(leaderState).Type(MigrationDecided).Next(d.Config.Node, VniLease{AttachedLeaseType, d.db.lease}).Run()
+func (_ AssignSelf) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+	var self Node
+	for _, node := range nodes {
+		if node.Name == d.Config.Node {
+			self = node
 		}
 	}
-	return nil
+	if self.Name == "" {
+		log.Error().Msg("could not find self in node list")
+		return nil
+	}
+	assignments := make([]Assignment, 0)
+	for vni, vniState := range state {
+		if vniState.Type == Unassigned {
+			assignments = append(assignments, Assignment{vni, *vniState, Failover, self})
+		} else if vniState.Type == Idle && vniState.Current != d.Config.Node {
+			assignments = append(assignments, Assignment{vni, *vniState, Migration, self})
+		}
+	}
+	return assignments
 }
 
 type AssignOther struct{}
 
-func (_ AssignOther) Assign(d *Daemon, leaderState LeaderState, nodes []Node, state map[uint64]*VniState) error {
+func (_ AssignOther) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+	assignments := make([]Assignment, 0)
 	node := nodes[0]
 	if node.Name == d.Config.Node && len(nodes) > 1 {
 		node = nodes[1]
 	}
 	for vni, vniState := range state {
 		if vniState.Type == Idle && vniState.Current == d.Config.Node && node.Name != d.Config.Node {
-			err := d.db.NewVniUpdate(vni).Revision(vniState.Revision).LeaderState(leaderState).Type(MigrationDecided).Next(node.Name, VniLease{AttachedLeaseType, node.Lease}).Run()
-			if err != nil {
-				return err
-			}
+			assignments = append(assignments, Assignment{vni, *vniState, Migration, node})
 		} else if vniState.Type == Unassigned {
-			err := d.db.NewVniUpdate(vni).Revision(vniState.Revision).LeaderState(leaderState).Type(FailoverDecided).Current("", NoLease).Next(node.Name, VniLease{AttachedLeaseType, node.Lease}).Run()
-			if err != nil {
-				return err
-			}
+			assignments = append(assignments, Assignment{vni, *vniState, Failover, node})
 		}
 	}
-	return nil
+	return assignments
 }
 
 type AssignGreedy struct{}
 
-func (_ AssignGreedy) Unassigned(d *Daemon, state VniState, leaderState LeaderState, vni uint64) error {
-	return nil
-}
-
-func (_ AssignGreedy) Periodic(d *Daemon, state VniState, leaderState LeaderState) error {
+func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
 	return nil
 }

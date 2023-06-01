@@ -150,7 +150,22 @@ func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState)
 	if err != nil {
 		return errors.Wrap(err, "could not get nodes")
 	}
-	err = d.assignmentStrategy.Assign(d, leader, nodes, state)
+	assignments := d.assignmentStrategy.Assign(d, nodes, state)
+	for _, assignment := range assignments {
+		stateType := MigrationDecided
+		if assignment.Type == Failover {
+			stateType = FailoverDecided
+		}
+		err = d.db.NewVniUpdate(assignment.Vni).
+			Revision(assignment.State.Revision).
+			Type(stateType).
+			Current(assignment.State.Current, NodeLease).
+			Next(assignment.Next.Name, VniLease{AttachedLeaseType, assignment.Next.Lease}).
+			Run()
+		if err != nil {
+			return errors.Wrap(err, "could not update vni")
+		}
+	}
 	return errors.Wrap(err, "could not perform periodic assignment")
 }
 
