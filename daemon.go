@@ -4,9 +4,12 @@ import (
 	"context"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"sync"
 	"time"
 )
+
+const DatabaseOpenInterval = 5 * time.Second
 
 type Configuration struct {
 	Node             string
@@ -54,15 +57,9 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 	}
 }
 
-func (d *Daemon) Run(ctx context.Context) error {
-	var err error
-	d.db, err = NewDatabase(ctx, d.Config)
-	defer d.db.Close()
-	if err != nil {
-		return errors.Wrap(err, "could not open database")
-	}
+func (d *Daemon) WithdrawAll() error {
 	for _, vni := range d.Config.Vnis {
-		err = d.networkStrategy.WithdrawEvpn(vni)
+		err := d.networkStrategy.WithdrawEvpn(vni)
 		if err != nil {
 			return errors.Wrap(err, "failed to withdraw evpn")
 		}
@@ -74,6 +71,71 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if err != nil {
 			return errors.Wrap(err, "failed to disable arp")
 		}
+	}
+	return nil
+}
+
+func (d *Daemon) SetupDatabase(ctx context.Context) {
+	var wg sync.WaitGroup
+	firstSetup := false
+	wg.Add(1)
+	go func() {
+		c := make(chan time.Time, 1)
+		c <- time.Now()
+
+		var ticker *time.Ticker
+		var tickerChan <-chan time.Time = c
+		var keepaliveChan <-chan *clientv3.LeaseKeepAliveResponse
+		for {
+			if ticker != nil {
+				tickerChan = ticker.C
+			}
+
+			select {
+			case <-ctx.Done():
+				if d.db != nil {
+					d.db.Close()
+				}
+				return
+			case <-tickerChan:
+				db, err := NewDatabase(ctx, d.Config)
+				if err != nil {
+					log.Error().Err(err).Msg("failed to reopen database")
+				} else if err == nil {
+					d.db = db
+					keepaliveChan = d.db.keepaliveChan
+					if ticker != nil {
+						ticker.Stop()
+						ticker = nil
+					}
+					if !firstSetup {
+						wg.Done()
+						firstSetup = true
+					}
+				}
+			case _, ok := <-keepaliveChan:
+				if !ok {
+					keepaliveChan = nil
+					log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
+					err := d.WithdrawAll()
+					if err != nil {
+						log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
+					}
+					ticker = time.NewTicker(DatabaseOpenInterval)
+					d.db.Close()
+
+				}
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+func (d *Daemon) Run(ctx context.Context) error {
+	d.SetupDatabase(ctx)
+	err := d.WithdrawAll()
+	if err != nil {
+		return errors.Wrap(err, "failed to withdraw all on startup")
 	}
 
 	leaderChan := make(chan LeaderState)
@@ -97,10 +159,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}()
 	wg.Add(1)
 	go func() {
-		err := NewReporter().Start(ctx, d)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to run reporter")
-		}
+		NewReporter().Start(ctx, d)
 		wg.Done()
 	}()
 
@@ -111,19 +170,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	wg.Wait()
 	log.Info().Msg("exiting, withdrawing everything")
-	for _, vni := range d.Config.Vnis {
-		err = d.networkStrategy.WithdrawEvpn(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to withdraw evpn")
-		}
-		err = d.networkStrategy.WithdrawOspf(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to withdraw ospf")
-		}
-		err = d.networkStrategy.DisableArp(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to disable arp")
-		}
-	}
-	return nil
+	err = d.WithdrawAll()
+	return errors.Wrap(err, "failed to withdraw all on shutdown")
 }

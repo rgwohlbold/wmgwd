@@ -39,18 +39,18 @@ func (r *Reporter) Report(d *Daemon) error {
 	return nil
 }
 
-func (r *Reporter) Start(ctx context.Context, d *Daemon) error {
+func (r *Reporter) Start(ctx context.Context, d *Daemon) {
 	ticker := time.NewTicker(ReportInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-ticker.C:
 			log.Debug().Msg("reporter: reporting")
 			err := r.Report(d)
 			if err != nil {
-				return err
+				log.Error().Err(err).Msg("reporter: failed to report")
 			}
 		}
 	}

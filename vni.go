@@ -31,7 +31,11 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 		case <-ctx.Done():
 			log.Debug().Msg("vni-watcher: context done")
 			return
-		case e := <-watchChan:
+		case e, ok := <-watchChan:
+			if !ok {
+				watchChan = d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+				continue
+			}
 			vni := InvalidVni
 			revision := e.Header.Revision
 			for _, ev := range e.Events {
@@ -56,7 +60,7 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 				log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
 				continue
 			}
-			log.Debug().Interface("state", state).Msg("vni-watcher: got state")
+			//log.Debug().Interface("state", state).Msg("vni-watcher: got state")
 			ch <- VniEvent{Vni: vni, State: state}
 		}
 	}

@@ -47,7 +47,11 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 		observeChan := election.Observe(ctx)
 		for {
 			select {
-			case value := <-observeChan:
+			case value, ok := <-observeChan:
+				if !ok {
+					observeChan = election.Observe(ctx)
+					continue
+				}
 				if string(value.Kvs[0].Value) == d.Config.Node {
 					continue
 				}

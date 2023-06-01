@@ -145,6 +145,9 @@ func (m HierarchyMap[K1, K2, V]) Min() K1 {
 type AssignGreedy struct{}
 
 func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+	if len(nodes) == 0 {
+		return nil
+	}
 	// determine utilization of each node and total utilization
 	utilization := make(map[string]uint64)
 	totalUtilization := uint64(0)

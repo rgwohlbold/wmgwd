@@ -141,6 +141,7 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 }
 
 func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState) error {
+	log.Info().Msg("event-processor: running periodic assignment")
 	state, err := d.db.GetFullState(d.Config, -1)
 	if err != nil {
 		log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
@@ -157,6 +158,7 @@ func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState)
 			stateType = FailoverDecided
 		}
 		err = d.db.NewVniUpdate(assignment.Vni).
+			LeaderState(leader).
 			Revision(assignment.State.Revision).
 			Type(stateType).
 			Current(assignment.State.Current, NodeLease).

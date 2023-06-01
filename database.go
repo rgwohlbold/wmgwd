@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const EtcdTimeout = 500 * time.Second
+const EtcdTimeout = 5 * time.Second
 const EtcdLeaseTTL = 5
 
 const EtcdVniPrefix = "/wmgwd/vni"
@@ -28,6 +28,7 @@ type Database struct {
 	client          *v3.Client
 	node            string
 	lease           v3.LeaseID
+	keepaliveChan   <-chan *v3.LeaseKeepAliveResponse
 	cancelKeepalive context.CancelFunc
 }
 
@@ -110,13 +111,7 @@ func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
 		return nil, err
 	}
 
-	go func() {
-		for range respChan {
-			// wait for channel to close
-		}
-	}()
-
-	return &Database{client, config.Node, lease.ID, cancel}, nil
+	return &Database{client, config.Node, lease.ID, respChan, cancel}, nil
 }
 
 func (db *Database) Close() {
