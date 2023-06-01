@@ -270,7 +270,10 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 		} else if suffix == EtcdVniNextSuffix {
 			state.Next = string(kv.Value)
 		} else if suffix == EtcdVniReportSuffix {
-			// ignore
+			state.Report, err = strconv.ParseUint(string(kv.Value), 10, 64)
+			if err != nil {
+				return VniState{}, errors.New("invalid report")
+			}
 		} else {
 			return VniState{}, errors.New("invalid suffix")
 		}

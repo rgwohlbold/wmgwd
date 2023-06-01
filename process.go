@@ -35,7 +35,7 @@ func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
 	return VerdictContinue
 }
 
-func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
+func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderState, event VniEvent, db *Database) error {
 	state := event.State.Type
 	current := event.State.Current
 	next := event.State.Next
@@ -46,7 +46,7 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 	// Failure detection and assignment
 	if isLeader {
 		if state == Unassigned {
-			err := d.assignmentStrategy.Unassigned(d, event.State, leaderState, event.Vni)
+			err := p.PeriodicAssignment(d, leaderState)
 			if err != nil {
 				log.Error().Err(err).Msg("could not assign unassigned vni")
 			}
@@ -140,6 +140,20 @@ func (_ DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 	return nil
 }
 
+func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState) error {
+	state, err := d.db.GetFullState(d.Config, -1)
+	if err != nil {
+		log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
+		return errors.Wrap(err, "could not get state")
+	}
+	nodes, err := d.db.Nodes()
+	if err != nil {
+		return errors.Wrap(err, "could not get nodes")
+	}
+	err = d.assignmentStrategy.Assign(d, leader, nodes, state)
+	return errors.Wrap(err, "could not perform periodic assignment")
+}
+
 func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent) error {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
@@ -152,29 +166,16 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 			return nil
 		case <-time.After(d.Config.ScanInterval):
 			if leader.Node == d.Config.Node {
-				for _, vni := range d.Config.Vnis {
-					state, err := d.db.GetState(vni, -1)
-					if err != nil {
-						log.Fatal().Err(err).Msg("event-processor: failed to get state")
-					}
-					err = d.assignmentStrategy.Periodical(d, state, leader, vni)
-					if err != nil {
-						log.Error().Err(err).Msg("event-processor: failed to process periodical")
-					}
+				err := p.PeriodicAssignment(d, leader)
+				if err != nil {
+					log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
 				}
 			}
 		case newNodeEvent := <-newNodeChan:
 			if leader.Node == d.Config.Node && newNodeEvent.Node != d.Config.Node {
-				log.Info().Str("node", newNodeEvent.Node).Msg("event-processor: new node")
-				for _, vni := range d.Config.Vnis {
-					state, err := d.db.GetState(vni, -1)
-					if err != nil {
-						log.Fatal().Err(err).Msg("event-processor: failed to get state")
-					}
-					err = d.assignmentStrategy.Periodical(d, state, leader, vni)
-					if err != nil {
-						log.Error().Err(err).Msg("event-processor: failed to process new node")
-					}
+				err := p.PeriodicAssignment(d, leader)
+				if err != nil {
+					log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
 				}
 			}
 		case event := <-vniChan:
