@@ -98,7 +98,7 @@ func TestGreedyMigrates(t *testing.T) {
 	}
 	config := Configuration{Node: "node1"}
 	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
-	AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Migration, nodes[1]})
+	AssertSingleAssignment(t, assignment, Assignment{1, *state[2], Migration, nodes[1]})
 }
 
 func TestGreedyMigratesEqually(t *testing.T) {

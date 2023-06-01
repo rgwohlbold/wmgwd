@@ -196,7 +196,11 @@ func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState
 			utilization[nextNode.Name] = minUtilization + vniUtilization
 
 			if nextNode.Name != event.State.Current {
-				assignments = append(assignments, Assignment{event.Vni, event.State, Failover, nextNode})
+				assignmentType := Failover
+				if event.State.Type == Idle {
+					assignmentType = Migration
+				}
+				assignments = append(assignments, Assignment{event.Vni, event.State, assignmentType, nextNode})
 			}
 		}
 	}
