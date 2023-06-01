@@ -3,6 +3,7 @@ module github.com/rgwohlbold/wmgwd
 go 1.20
 
 require (
+	github.com/emirpasic/gods v1.18.1
 	github.com/mdlayher/arp v0.0.0-20220512170110-6706a2966875
 	github.com/pkg/errors v0.9.1
 	github.com/rs/zerolog v1.29.1

@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func AssertSingleAssignment(t *testing.T, assignments []Assignment, expected Assignment) {
 	if len(assignments) != 1 {
@@ -22,7 +24,7 @@ func TestAssignsUnassigned(t *testing.T) {
 		1: {Type: Unassigned},
 	}
 	config := Configuration{Node: "node1"}
-	strategies := []AssignmentStrategy{AssignSelf{}, AssignOther{}}
+	strategies := []AssignmentStrategy{AssignSelf{}, AssignOther{}, AssignGreedy{}}
 	for _, strategy := range strategies {
 		assignment := strategy.Assign(&Daemon{Config: config}, nodes, state)
 		AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Failover, nodes[0]})
@@ -82,5 +84,46 @@ func TestAssignOtherDoesNothing(t *testing.T) {
 	assignment := AssignOther{}.Assign(&Daemon{Config: config}, nodes, state)
 	if len(assignment) != 0 {
 		t.Errorf("expected no assignment, got %d", len(assignment))
+	}
+}
+
+func TestGreedyMigrates(t *testing.T) {
+	nodes := []Node{
+		{Name: "node1"},
+		{Name: "node2"},
+	}
+	state := map[uint64]*VniState{
+		1: {Type: Idle, Current: "node1", Report: 3},
+		2: {Type: Idle, Current: "node1", Report: 2},
+	}
+	config := Configuration{Node: "node1"}
+	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Migration, nodes[1]})
+}
+
+func TestGreedyMigratesEqually(t *testing.T) {
+	nodes := []Node{
+		{Name: "node1"},
+		{Name: "node2"},
+		{Name: "node3"},
+	}
+	state := map[uint64]*VniState{}
+	for i := 1; i <= 300; i++ {
+		state[uint64(i)] = &VniState{Type: Idle, Current: "node1", Report: 1}
+	}
+	config := Configuration{Node: "node1"}
+	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	finalAssignment := map[string]int{}
+	for _, a := range assignment {
+		finalAssignment[a.Next.Name]++
+	}
+	if finalAssignment["node1"] != 0 {
+		t.Errorf("expected 0 assignments to node1, got %d", finalAssignment["node1"])
+	}
+	if finalAssignment["node2"] != 100 {
+		t.Errorf("expected 100 assignments to node2, got %d", finalAssignment["node2"])
+	}
+	if finalAssignment["node3"] != 100 {
+		t.Errorf("expected 100 assignments to node3, got %d", finalAssignment["node3"])
 	}
 }
