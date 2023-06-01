@@ -127,3 +127,26 @@ func TestGreedyMigratesEqually(t *testing.T) {
 		t.Errorf("expected 100 assignments to node3, got %d", finalAssignment["node3"])
 	}
 }
+
+func TestGreedyIsNotOptimal(t *testing.T) {
+	nodes := []Node{
+		{Name: "node1"},
+		{Name: "node2"},
+	}
+	state := map[uint64]*VniState{
+		1: {Type: Idle, Current: "node1", Report: 5},
+		2: {Type: Idle, Current: "node1", Report: 4},
+		3: {Type: Idle, Current: "node1", Report: 3},
+		4: {Type: Idle, Current: "node1", Report: 2},
+		5: {Type: Idle, Current: "node1", Report: 1},
+	}
+	config := Configuration{Node: "node1"}
+	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	finalUtilization := map[string]uint64{}
+	for _, a := range assignment {
+		finalUtilization[a.Next.Name] += state[a.Vni].Report
+	}
+	if finalUtilization["node2"] != 6 && finalUtilization["node2"] != 9 {
+		t.Errorf("expected 8 or 10 utilization on node2, got %d", finalUtilization["node1"])
+	}
+}

@@ -164,7 +164,8 @@ func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState
 		nodeMap.Add(utilization[node.Name], node.Name, node)
 	}
 
-	utilizationThreshold := totalUtilization / uint64(len(nodes))
+	// round up
+	utilizationThreshold := (totalUtilization + uint64(len(nodes)) - 1) / uint64(len(nodes))
 
 	// determine vnis to migrate/failover
 	vniMap := NewMultiMap[uint64, uint64, VniEvent](utils.UInt64Comparator, utils.UInt64Comparator)
