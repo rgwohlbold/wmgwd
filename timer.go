@@ -13,7 +13,7 @@ type TimerEventIngestor struct {
 }
 
 type TimerEvent struct {
-	Func func() error
+	Func func()
 }
 
 func NewTimerEventIngestor() TimerEventIngestor {

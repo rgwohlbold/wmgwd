@@ -6,12 +6,15 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3 "go.etcd.io/etcd/client/v3"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const EtcdTimeout = 5 * time.Second
+const EtcdMaxTimeout = 600 * time.Second
+const EtcdJitter = 5 * time.Millisecond
 const EtcdLeaseTTL = 5
 
 const EtcdVniPrefix = "/wmgwd/vni"
@@ -290,15 +293,16 @@ func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
 	return &VniUpdate{db: db, vni: vni}
 }
 
-func (u *VniUpdate) leaseTypeToOption(lease VniLease) ([]v3.OpOption, error) {
+func (u *VniUpdate) leaseTypeToOption(lease VniLease) []v3.OpOption {
 	if lease == NodeLease {
-		return []v3.OpOption{v3.WithLease(u.db.lease)}, nil
+		return []v3.OpOption{v3.WithLease(u.db.lease)}
 	} else if lease == NoLease {
-		return []v3.OpOption{}, nil
+		return []v3.OpOption{}
 	} else if lease.Type == AttachedLeaseType {
-		return []v3.OpOption{v3.WithLease(lease.Lease)}, nil
+		return []v3.OpOption{v3.WithLease(lease.Lease)}
 	}
-	return nil, errors.New("invalid lease type")
+	log.Fatal().Msg("invalid lease type")
+	return nil
 }
 
 func (u *VniUpdate) Type(stateType VniStateType) *VniUpdate {
@@ -348,17 +352,14 @@ func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
 	return u
 }
 
-func (u *VniUpdate) Run() error {
+func (u *VniUpdate) Run() {
 	if !u.hasRevision {
 		panic(errors.New("revision not set"))
 	}
 	ops := make([]v3.Op, 0)
 	l := log.Info()
 	for _, part := range u.parts {
-		leaseOption, err := u.leaseTypeToOption(part.Lease)
-		if err != nil {
-			return err
-		}
+		leaseOption := u.leaseTypeToOption(part.Lease)
 		ops = append(ops, v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption...))
 
 		if part.Key == EtcdVniTypeSuffix {
@@ -378,15 +379,23 @@ func (u *VniUpdate) Run() error {
 		}
 	}
 	l.Msg("updating vni")
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	defer cancel()
-	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
-	if err != nil {
-		return errors.Wrap(err, "failed to update vni")
-	}
-	if !resp.Succeeded {
-		return errors.New("transaction failed")
-	}
-	return nil
+
+	go func() {
+		timeout := EtcdTimeout
+		for timeout <= EtcdMaxTimeout {
+			ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+			resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
+			cancel()
+			if err != nil {
+				log.Warn().Err(err).Msg("failed to update vni, retrying")
+			}
+			if !resp.Succeeded {
+				log.Warn().Msg("transaction to update vni failed, not retrying")
+				return
+			}
+			jitter := time.Duration(rand.Intn(int(2*EtcdJitter)) - int(EtcdJitter))
+			timeout = 2*timeout + jitter
+		}
+	}()
 
 }
