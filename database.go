@@ -13,8 +13,8 @@ import (
 )
 
 const EtcdTimeout = 5 * time.Second
-const EtcdMaxTimeout = 600 * time.Second
-const EtcdJitter = 5 * time.Millisecond
+const EtcdMaxTimeout = 24 * time.Hour
+const EtcdJitter = 50 * time.Millisecond
 const EtcdLeaseTTL = 5
 
 const EtcdVniPrefix = "/wmgwd/vni"
