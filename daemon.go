@@ -75,65 +75,71 @@ func (d *Daemon) WithdrawAll() error {
 	return nil
 }
 
-func (d *Daemon) SetupDatabase(ctx context.Context) {
+func (d *Daemon) SetupDatabase(ctx context.Context) error {
+	var err error
+	d.db, err = NewDatabase(d.Config)
+	if err != nil {
+		return errors.Wrap(err, "failed to create database")
+	}
+
 	var wg sync.WaitGroup
-	firstSetup := false
 	wg.Add(1)
 	go func() {
-		c := make(chan time.Time, 1)
-		c <- time.Now()
+		var respChan <-chan *clientv3.LeaseKeepAliveResponse
+		var cancel context.CancelFunc
+		for {
+			respChan, cancel, err = d.db.CreateLeaseAndKeepalive(ctx)
+			if err == nil {
+				break
+			}
+		}
+		wg.Done()
 
 		var ticker *time.Ticker
-		var tickerChan <-chan time.Time = c
-		var keepaliveChan <-chan *clientv3.LeaseKeepAliveResponse
+		var tickerChan <-chan time.Time = nil
 		for {
-			if ticker != nil {
-				tickerChan = ticker.C
-			}
-
 			select {
 			case <-ctx.Done():
-				if d.db != nil {
-					d.db.Close()
+				if cancel != nil {
+					cancel()
 				}
+				d.db.Close()
 				return
-			case <-tickerChan:
-				db, err := NewDatabase(ctx, d.Config)
-				if err != nil {
-					log.Error().Err(err).Msg("failed to reopen database")
-				} else if err == nil {
-					d.db = db
-					keepaliveChan = d.db.keepaliveChan
-					if ticker != nil {
-						ticker.Stop()
-						ticker = nil
-					}
-					if !firstSetup {
-						wg.Done()
-						firstSetup = true
-					}
-				}
-			case _, ok := <-keepaliveChan:
+			case _, ok := <-respChan:
 				if !ok {
-					keepaliveChan = nil
 					log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
-					err := d.WithdrawAll()
+					respChan = nil
+					cancel()
+					err = d.WithdrawAll()
 					if err != nil {
 						log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
 					}
 					ticker = time.NewTicker(DatabaseOpenInterval)
-					d.db.Close()
-
+					tickerChan = ticker.C
 				}
+			case <-tickerChan:
+				newRespChan, newCancel, err := d.db.CreateLeaseAndKeepalive(ctx)
+				if err != nil {
+					continue
+				}
+				log.Info().Msg("database reopened")
+				respChan = newRespChan
+				cancel = newCancel
+				ticker.Stop()
+				ticker = nil
 			}
 		}
 	}()
 	wg.Wait()
+	return nil
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	d.SetupDatabase(ctx)
-	err := d.WithdrawAll()
+	err := d.SetupDatabase(ctx)
+	if err != nil {
+		return errors.Wrap(err, "failed to setup database")
+	}
+	err = d.WithdrawAll()
 	if err != nil {
 		return errors.Wrap(err, "failed to withdraw all on startup")
 	}

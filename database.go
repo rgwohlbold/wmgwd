@@ -25,11 +25,9 @@ const EtcdNodePrefix = "/wmgwd/node/"
 const EtcdLeaderPrefix = "/wmgwd/leader/"
 
 type Database struct {
-	client          *v3.Client
-	node            string
-	lease           v3.LeaseID
-	keepaliveChan   <-chan *v3.LeaseKeepAliveResponse
-	cancelKeepalive context.CancelFunc
+	client *v3.Client
+	node   string
+	lease  v3.LeaseID
 }
 
 type VniLease struct {
@@ -90,32 +88,36 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 	return lease, nil
 }
 
-func NewDatabase(ctx context.Context, config Configuration) (*Database, error) {
+func NewDatabase(config Configuration) (*Database, error) {
 	client, err := v3.New(v3.Config{
 		Endpoints: []string{"http://localhost:2379"},
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	return &Database{client: client, node: config.Node}, nil
+}
+
+func (db *Database) CreateLeaseAndKeepalive(ctx context.Context) (<-chan *v3.LeaseKeepAliveResponse, context.CancelFunc, error) {
 	ctx, cancel := context.WithCancel(ctx)
-
-	lease, err := createLease(ctx, client)
+	lease, err := createLease(ctx, db.client)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
+	db.lease = lease.ID
 
-	respChan, err := client.KeepAlive(ctx, lease.ID)
+	respChan, err := db.client.KeepAlive(ctx, db.lease)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
+	return respChan, cancel, nil
 
-	return &Database{client, config.Node, lease.ID, respChan, cancel}, nil
 }
 
 func (db *Database) Close() {
-	db.cancelKeepalive()
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 	_, err := db.client.Revoke(ctx, db.lease)

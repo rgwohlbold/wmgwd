@@ -14,7 +14,7 @@ import (
 )
 
 func WipeDatabase(t *testing.T) {
-	db, err := NewDatabase(context.Background(), Configuration{})
+	db, err := NewDatabase(Configuration{})
 	if err != nil {
 		t.Errorf("NewDatabase(config) = %v; want nil", err)
 	}
@@ -88,7 +88,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
-			db, err := NewDatabase(context.Background(), d.Config)
+			db, err := NewDatabase(d.Config)
 			if err != nil {
 				t.Errorf("NewDatabase(config) = %v; want nil", err)
 			}
@@ -322,7 +322,7 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Error starting etcd: %v\n", err)
 		os.Exit(1)
 	}
-	db, err := NewDatabase(context.Background(), Configuration{Node: "db-starter"})
+	db, err := NewDatabase(Configuration{Node: "db-starter"})
 	if err != nil {
 		fmt.Printf("Error creating database: %v\n", err)
 		os.Exit(1)
