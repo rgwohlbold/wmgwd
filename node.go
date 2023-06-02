@@ -6,26 +6,32 @@ import (
 	v3 "go.etcd.io/etcd/client/v3"
 )
 
-type NewNodeEventIngestor struct{}
+type NewNodeEventIngestor struct {
+	WatchChanChan <-chan v3.WatchChan
+}
 
 type NewNodeEvent struct {
 	Node string
 }
 
-func (_ NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan chan<- NewNodeEvent, setupChan chan<- struct{}) {
-	watchChan := d.db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-	setupChan <- struct{}{}
+func (i NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan chan<- NewNodeEvent) {
+	watchChan := <-i.WatchChanChan
 	for {
-		e, ok := <-watchChan
-		if !ok {
+		select {
+		case <-ctx.Done():
 			log.Debug().Msg("node-watcher: context done")
-			break
-		}
-		for _, ev := range e.Events {
-			if ev.Type != v3.EventTypePut {
+			return
+		case e, ok := <-watchChan:
+			if !ok {
+				watchChan = <-i.WatchChanChan
 				continue
 			}
-			newNodeChan <- NewNodeEvent{Node: string(ev.Kv.Value)}
+			for _, ev := range e.Events {
+				if ev.Type != v3.EventTypePut {
+					continue
+				}
+				newNodeChan <- NewNodeEvent{Node: string(ev.Kv.Value)}
+			}
 		}
 	}
 }

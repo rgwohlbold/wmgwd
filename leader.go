@@ -13,10 +13,7 @@ type LeaderState struct {
 
 type LeaderEventIngestor struct{}
 
-func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan chan<- LeaderState, setupChan chan<- struct{}) {
-	// we will never miss a relevant leader event: we are followers first and always observe ourselves being elected
-	setupChan <- struct{}{}
-
+func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan chan<- LeaderState) {
 	leaderChan <- LeaderState{Node: "", Key: ""}
 	session, err := concurrency.NewSession(d.db.client, concurrency.WithTTL(EtcdLeaseTTL))
 	if err != nil {

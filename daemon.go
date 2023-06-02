@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	v3 "go.etcd.io/etcd/client/v3"
 	"sync"
 	"time"
 )
@@ -31,17 +31,15 @@ type Daemon struct {
 }
 
 type EventIngestor[E any] interface {
-	Ingest(ctx context.Context, daemon *Daemon, eventChan chan<- E, setupChan chan<- struct{})
+	Ingest(ctx context.Context, daemon *Daemon, eventChan chan<- E)
 }
 
 func runEventIngestor[E any](ctx context.Context, daemon *Daemon, ingestor EventIngestor[E], eventChan chan<- E, wg *sync.WaitGroup) {
 	wg.Add(1)
-	setupChan := make(chan struct{})
 	go func() {
-		ingestor.Ingest(ctx, daemon, eventChan, setupChan)
+		ingestor.Ingest(ctx, daemon, eventChan)
 		wg.Done()
 	}()
-	<-setupChan
 }
 
 func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) *Daemon {
@@ -75,23 +73,31 @@ func (d *Daemon) WithdrawAll() error {
 	return nil
 }
 
-func (d *Daemon) SetupDatabase(ctx context.Context) error {
+func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan v3.WatchChan, error) {
+	vniChanChan := make(chan v3.WatchChan, 1)
+	nodeChanChan := make(chan v3.WatchChan, 1)
 	var err error
 	d.db, err = NewDatabase(d.Config)
 	if err != nil {
-		return errors.Wrap(err, "failed to create database")
+		return nil, nil, errors.Wrap(err, "failed to create database")
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		var respChan <-chan *clientv3.LeaseKeepAliveResponse
+		var respChan <-chan *v3.LeaseKeepAliveResponse
 		var cancel context.CancelFunc
 		for {
 			respChan, cancel, err = d.db.CreateLeaseAndKeepalive(ctx)
 			if err == nil {
 				break
 			}
+		}
+		vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+		nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+		err = d.db.Register(d.Config.Node)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to register node")
 		}
 		wg.Done()
 
@@ -127,15 +133,23 @@ func (d *Daemon) SetupDatabase(ctx context.Context) error {
 				cancel = newCancel
 				ticker.Stop()
 				ticker = nil
+
+				vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+				nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+				err = d.db.Register(d.Config.Node)
+				if err != nil {
+					log.Error().Err(err).Msg("failed to register node")
+				}
 			}
 		}
 	}()
 	wg.Wait()
-	return nil
+	return vniChanChan, nodeChanChan, nil
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	err := d.SetupDatabase(ctx)
+	var err error
+	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup database")
 	}

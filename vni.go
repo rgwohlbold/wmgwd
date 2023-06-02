@@ -19,13 +19,14 @@ type VniEvent struct {
 	Vni   uint64
 }
 
-type VniEventIngestor struct{}
+type VniEventIngestor struct {
+	WatchChanChan <-chan v3.WatchChan
+}
 
 const InvalidVni = ^uint64(0)
 
-func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEvent, setupChan chan<- struct{}) {
-	watchChan := d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-	setupChan <- struct{}{}
+func (i VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEvent) {
+	watchChan := <-i.WatchChanChan
 	for {
 		select {
 		case <-ctx.Done():
@@ -33,7 +34,7 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			return
 		case e, ok := <-watchChan:
 			if !ok {
-				watchChan = d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+				watchChan = <-i.WatchChanChan
 				continue
 			}
 			vni := InvalidVni
@@ -60,7 +61,6 @@ func (_ VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 				log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
 				continue
 			}
-			//log.Debug().Interface("state", state).Msg("vni-watcher: got state")
 			ch <- VniEvent{Vni: vni, State: state}
 		}
 	}
