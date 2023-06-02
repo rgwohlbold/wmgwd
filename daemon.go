@@ -183,11 +183,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		wg.Done()
 	}()
 
-	err = d.db.Register(d.Config.Node)
-	if err != nil {
-		return errors.Wrap(err, "could not register")
-	}
-
 	wg.Wait()
 	log.Info().Msg("exiting, withdrawing everything")
 	err = d.WithdrawAll()
