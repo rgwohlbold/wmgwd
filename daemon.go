@@ -5,6 +5,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -12,6 +13,7 @@ import (
 const DatabaseOpenInterval = 5 * time.Second
 
 const PeriodicArpInterval = 10 * time.Second
+const NumConsistentHashingUids = 100
 
 type Configuration struct {
 	Node             string
@@ -31,6 +33,7 @@ type Daemon struct {
 	eventProcessor       EventProcessor
 	db                   *Database
 	periodicArpChan      chan bool
+	uids                 []uint64
 }
 
 type EventIngestor[E any] interface {
@@ -46,6 +49,10 @@ func runEventIngestor[E any](ctx context.Context, daemon *Daemon, ingestor Event
 }
 
 func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) *Daemon {
+	uids := make([]uint64, NumConsistentHashingUids)
+	for i := range uids {
+		uids[i] = rand.Uint64()
+	}
 	return &Daemon{
 		Config:               config,
 		assignmentStrategy:   as,
@@ -139,7 +146,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 		d.StartPeriodicArp()
 		vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-		err = d.db.Register(d.Config.Node)
+		err = d.db.Register(d.Config.Node, d.uids)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to register node")
 		}
@@ -182,7 +189,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 
 				vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 				nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-				err = d.db.Register(d.Config.Node)
+				err = d.db.Register(d.Config.Node, d.uids)
 				if err != nil {
 					log.Error().Err(err).Msg("failed to register node")
 				}

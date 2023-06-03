@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -136,6 +137,7 @@ func (db *Database) Close() {
 type Node struct {
 	Name  string
 	Lease v3.LeaseID
+	Uids  []uint64
 }
 
 func (db *Database) Nodes() ([]Node, error) {
@@ -149,17 +151,28 @@ func (db *Database) Nodes() ([]Node, error) {
 
 	nodes := make([]Node, len(resp.Kvs))
 	for i, kv := range resp.Kvs {
-		nodes[i] = Node{Name: string(kv.Value), Lease: v3.LeaseID(kv.Lease)}
+		var uids []uint64
+		err = json.Unmarshal(kv.Value, &uids)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not unmarshal uids")
+		}
+		name := strings.TrimPrefix(string(kv.Key), EtcdNodePrefix)
+		nodes[i] = Node{Name: name, Lease: v3.LeaseID(kv.Lease), Uids: uids}
 	}
 
 	return nodes, nil
 }
 
-func (db *Database) Register(node string) error {
+func (db *Database) Register(node string, uids []uint64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 
-	_, err := db.client.Put(ctx, EtcdNodePrefix+node, node, v3.WithLease(db.lease))
+	serialized, err := json.Marshal(uids)
+	if err != nil {
+		log.Fatal().Err(err).Msg("could not marshal uids")
+	}
+
+	_, err = db.client.Put(ctx, EtcdNodePrefix+node, string(serialized), v3.WithLease(db.lease))
 	return errors.Wrap(err, "could not put to etcd")
 }
 

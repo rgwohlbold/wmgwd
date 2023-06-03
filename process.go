@@ -186,7 +186,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				}
 			}
 		case newNodeEvent := <-newNodeChan:
-			if leader.Node == d.Config.Node && newNodeEvent.Node != d.Config.Node {
+			if leader.Node == d.Config.Node && newNodeEvent.Node.Name != d.Config.Node {
 				err := p.PeriodicAssignment(d, leader)
 				if err != nil {
 					log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")

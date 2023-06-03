@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
+	"strings"
 )
 
 type NewNodeEventIngestor struct {
@@ -11,7 +13,7 @@ type NewNodeEventIngestor struct {
 }
 
 type NewNodeEvent struct {
-	Node string
+	Node Node
 }
 
 func (i NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan chan<- NewNodeEvent) {
@@ -30,7 +32,18 @@ func (i NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan
 				if ev.Type != v3.EventTypePut {
 					continue
 				}
-				newNodeChan <- NewNodeEvent{Node: string(ev.Kv.Value)}
+				var uids []uint64
+				err := json.Unmarshal(ev.Kv.Value, &uids)
+				if err != nil {
+					log.Error().Err(err).Msg("node-watcher: failed to unmarshal uids")
+					continue
+				}
+				name := strings.TrimPrefix(string(ev.Kv.Key), EtcdNodePrefix)
+				newNodeChan <- NewNodeEvent{Node: Node{
+					Name:  name,
+					Lease: v3.LeaseID(ev.Kv.Lease),
+					Uids:  uids,
+				}}
 			}
 		}
 	}
