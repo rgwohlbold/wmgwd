@@ -11,6 +11,8 @@ import (
 
 const DatabaseOpenInterval = 5 * time.Second
 
+const PeriodicArpInterval = 10 * time.Second
+
 type Configuration struct {
 	Node             string
 	Vnis             []uint64
@@ -28,6 +30,7 @@ type Daemon struct {
 	leaderEventIngestor  LeaderEventIngestor
 	eventProcessor       EventProcessor
 	db                   *Database
+	periodicArpChan      chan bool
 }
 
 type EventIngestor[E any] interface {
@@ -73,6 +76,44 @@ func (d *Daemon) WithdrawAll() error {
 	return nil
 }
 
+func (d *Daemon) StartPeriodicArp() {
+	d.periodicArpChan <- true
+}
+
+func (d *Daemon) StopPeriodicArp() {
+	d.periodicArpChan <- false
+}
+
+func (d *Daemon) InitPeriodicArp() {
+	d.periodicArpChan = make(chan bool, 1)
+
+	go func() {
+		for {
+			enabled := <-d.periodicArpChan
+			select {
+			case enabled = <-d.periodicArpChan:
+				continue
+			case <-time.After(PeriodicArpInterval):
+				if enabled {
+					state, err := d.db.GetFullState(d.Config, -1)
+					if err != nil {
+						log.Error().Err(err).Msg("periodic arp: failed to get full state")
+						continue
+					}
+					for vni, vniState := range state {
+						if vniState.Type == Idle && vniState.Current == d.Config.Node {
+							err = d.networkStrategy.SendGratuitousArp(vni)
+							if err != nil {
+								log.Error().Err(err).Msg("periodic arp: failed to send gratuitous arp")
+							}
+						}
+					}
+				}
+			}
+		}
+	}()
+}
+
 func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan v3.WatchChan, error) {
 	vniChanChan := make(chan v3.WatchChan, 1)
 	nodeChanChan := make(chan v3.WatchChan, 1)
@@ -93,6 +134,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 				break
 			}
 		}
+		d.StartPeriodicArp()
 		vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		err = d.db.Register(d.Config.Node)
@@ -109,11 +151,12 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 				if cancel != nil {
 					cancel()
 				}
-				d.db.Close()
+				d.StopPeriodicArp()
 				return
 			case _, ok := <-respChan:
 				if !ok {
 					log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
+					d.StopPeriodicArp()
 					respChan = nil
 					cancel()
 					err = d.WithdrawAll()
@@ -129,6 +172,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 					continue
 				}
 				log.Info().Msg("database reopened")
+				d.StartPeriodicArp()
 				respChan = newRespChan
 				cancel = newCancel
 				ticker.Stop()
@@ -148,17 +192,19 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	d.InitPeriodicArp()
 	var err error
 	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup database")
 	}
+	defer d.db.Close()
 	err = d.WithdrawAll()
 	if err != nil {
 		return errors.Wrap(err, "failed to withdraw all on startup")
 	}
 
-	leaderChan := make(chan LeaderState)
+	leaderChan := make(chan LeaderState, 1)
 	vniChan := make(chan VniEvent, len(d.Config.Vnis))
 	newNodeChan := make(chan NewNodeEvent)
 	timerChan := make(chan TimerEvent)
