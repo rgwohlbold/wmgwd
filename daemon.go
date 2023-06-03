@@ -84,13 +84,15 @@ func (d *Daemon) StopPeriodicArp() {
 	d.periodicArpChan <- false
 }
 
-func (d *Daemon) InitPeriodicArp() {
+func (d *Daemon) InitPeriodicArp(ctx context.Context) {
 	d.periodicArpChan = make(chan bool, 1)
 
 	go func() {
+		enabled := <-d.periodicArpChan
 		for {
-			enabled := <-d.periodicArpChan
 			select {
+			case <-ctx.Done():
+				return
 			case enabled = <-d.periodicArpChan:
 				continue
 			case <-time.After(PeriodicArpInterval):
@@ -192,7 +194,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	d.InitPeriodicArp()
+	d.InitPeriodicArp(ctx)
 	var err error
 	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx)
 	if err != nil {
