@@ -53,11 +53,11 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 		} else {
 			// All states except Unassigned and Idle need "Next"
 			if next == "" && state != Idle {
-				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
+				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 			}
 			// All states except Unassigned, FailoverDecided need "Current"
 			if current == "" && state != Unassigned && state != FailoverDecided {
-				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).Run()
+				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 			}
 		}
 	}
@@ -73,7 +73,7 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				log.Fatal().Err(err).Msg("could not advertise ospf")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() {
-				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).Run()
+				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry()
 			}})
 		}})
 	} else if state == MigrationOspfAdvertised && isCurrent {
@@ -82,36 +82,36 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 			return errors.Wrap(err, "could not withdraw ospf")
 		}
 		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() {
-			db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).Run()
+			db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).RunWithRetry()
 		}})
 	} else if state == MigrationOspfWithdrawn && isNext {
 		err := d.networkStrategy.EnableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not enable arp")
 		}
-		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).Run()
+		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).RunWithRetry()
 	} else if state == MigrationArpEnabled && isCurrent {
 		err := d.networkStrategy.DisableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not disable arp")
 		}
-		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).Run()
+		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).RunWithRetry()
 	} else if state == MigrationArpDisabled && isNext {
 		err := d.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not send gratuitous arp")
 		}
 		d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() {
-			db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).Run()
+			db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry()
 		}})
 	} else if state == MigrationGratuitousArpSent && isCurrent {
 		err := d.networkStrategy.WithdrawEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw evpn")
 		}
-		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).Run()
+		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).RunWithRetry()
 	} else if state == MigrationEvpnWithdrawn && isNext {
-		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
+		db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 	} else if state == FailoverDecided && isNext {
 		err := d.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
@@ -131,7 +131,7 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 				log.Error().Err(err).Msg("could not send gratuitous arp")
 			}
 			d.timerEventIngestor.Enqueue(d.Config.MigrationTimeout, TimerEvent{Func: func() {
-				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).Run()
+				db.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 			}})
 		}})
 	}
@@ -155,13 +155,16 @@ func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState)
 		if assignment.Type == Failover {
 			stateType = FailoverDecided
 		}
-		d.db.NewVniUpdate(assignment.Vni).
+		err = d.db.NewVniUpdate(assignment.Vni).
 			LeaderState(leader).
 			Revision(assignment.State.Revision).
 			Type(stateType).
 			Current(assignment.State.Current, NodeLease).
 			Next(assignment.Next.Name, VniLease{AttachedLeaseType, assignment.Next.Lease}).
-			Run()
+			RunOnce()
+		if err != nil {
+			log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+		}
 	}
 	return errors.Wrap(err, "could not perform periodic assignment")
 }
