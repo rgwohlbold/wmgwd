@@ -209,3 +209,42 @@ func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState
 	}
 	return assignments
 }
+
+type AssignConsistentHashing struct{}
+
+func murmur64(key uint64) uint64 {
+	key ^= key >> 33
+	key *= 0xff51afd7ed558ccd
+	key ^= key >> 33
+	key *= 0xc4ceb9fe1a85ec53
+	key ^= key >> 33
+	return key
+}
+
+func (_ AssignConsistentHashing) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+	if len(nodes) == 0 {
+		return nil
+	}
+	hashNode := treemap.NewWith(utils.UInt64Comparator)
+	for _, node := range nodes {
+		for _, uid := range node.Uids {
+			hashNode.Put(murmur64(uid), node)
+		}
+	}
+	assignments := make([]Assignment, 0)
+	for vni, vniState := range state {
+		if vniState.Type != Idle && vniState.Type != Unassigned {
+			continue
+		}
+		_, node := hashNode.Ceiling(murmur64(vni))
+		if node == nil {
+			_, node = hashNode.Min()
+		}
+		if vniState.Type == Unassigned {
+			assignments = append(assignments, Assignment{vni, *vniState, Failover, node.(Node)})
+		} else if vniState.Type == Idle && node.(Node).Name != vniState.Current {
+			assignments = append(assignments, Assignment{vni, *vniState, Migration, node.(Node)})
+		}
+	}
+	return assignments
+}

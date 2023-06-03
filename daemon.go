@@ -62,6 +62,7 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		newNodeEventIngestor: NewNodeEventIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
 		eventProcessor:       DefaultEventProcessor{},
+		uids:                 uids,
 	}
 }
 

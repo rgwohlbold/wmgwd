@@ -46,7 +46,6 @@ func (r *Reporter) Start(ctx context.Context, d *Daemon) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Debug().Msg("reporter: reporting")
 			err := r.Report(d)
 			if err != nil {
 				log.Error().Err(err).Msg("reporter: failed to report")

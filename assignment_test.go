@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 )
 
@@ -149,4 +150,46 @@ func TestGreedyIsNotOptimal(t *testing.T) {
 	if finalUtilization["node2"] != 6 && finalUtilization["node2"] != 9 {
 		t.Errorf("expected 8 or 10 utilization on node2, got %d", finalUtilization["node1"])
 	}
+}
+
+func FindVniThatMapsBetween(lower, higher uint64) uint64 {
+	for i := uint64(0); i < math.MaxUint64; i++ {
+		if murmur64(i) >= lower && murmur64(i) < higher {
+			return i
+		}
+	}
+	panic("could not find uid")
+}
+
+func TestConsistentHashingAssignsToNextHigher(t *testing.T) {
+	lower := uint64(math.MaxUint64 / 20)
+	higher := uint64(math.MaxUint64 / 10)
+	nodes := []Node{
+		{Name: "node1", Uids: []uint64{lower}},
+		{Name: "node2", Uids: []uint64{higher}},
+	}
+	vni := FindVniThatMapsBetween(lower, higher)
+	state := map[uint64]*VniState{
+		vni: {Type: Unassigned},
+	}
+	config := Configuration{Node: "node1"}
+	assignment := AssignConsistentHashing{}.Assign(&Daemon{Config: config}, nodes, state)
+	AssertSingleAssignment(t, assignment, Assignment{1, *state[vni], Failover, nodes[1]})
+}
+
+func TestConsistentHashingWrapsAround(t *testing.T) {
+	lower := uint64(math.MaxUint64 / 20)
+	higher := uint64(math.MaxUint64 / 10)
+	nodes := []Node{
+		{Name: "node1", Uids: []uint64{lower}},
+		{Name: "node2", Uids: []uint64{higher}},
+	}
+	vni := FindVniThatMapsBetween(higher+1, math.MaxUint64)
+	state := map[uint64]*VniState{
+		vni: {Type: Unassigned},
+	}
+	config := Configuration{Node: "node1"}
+	assignment := AssignConsistentHashing{}.Assign(&Daemon{Config: config}, nodes, state)
+	AssertSingleAssignment(t, assignment, Assignment{1, *state[vni], Failover, nodes[0]})
+
 }

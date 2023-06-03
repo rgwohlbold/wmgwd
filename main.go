@@ -37,7 +37,7 @@ func main() {
 		Node:             os.Args[1],
 		Vnis:             []uint64{100},
 		MigrationTimeout: 5 * time.Second,
-	}, NewSystemNetworkStrategy(), AssignGreedy{}).Run(ctx)
+	}, NewSystemNetworkStrategy(), AssignConsistentHashing{}).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")
 	}
