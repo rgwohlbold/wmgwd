@@ -12,24 +12,39 @@ import (
 
 func main() {
 	runtime.GOMAXPROCS(2) // vtysh and go stuff
-
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	fileInfo, err := os.Stderr.Stat()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to stat stderr")
+	} else {
+		if fileInfo.Mode()&os.ModeCharDevice != 0 {
+			log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+		}
+	}
 	if len(os.Args) != 2 {
 		log.Fatal().Msg("usage: wmgwd <node>")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, os.Interrupt)
 	go func() {
-		signalChan := make(chan os.Signal)
-		signal.Notify(signalChan, os.Interrupt)
 		<-signalChan
 		cancel()
 	}()
+
+	vnis := make([]uint64, 0, 1000)
+	for i := uint64(1); i < 1000; i++ {
+		vnis = append(vnis, i)
+	}
 	err = NewDaemon(Configuration{
 		ScanInterval:     1 * time.Second,
 		Node:             os.Args[1],
-		Vnis:             []uint64{100, 200, 300, 400, 500, 600, 700, 800, 900, 1000},
-		MigrationTimeout: 5 * time.Second,
+		Vnis:             vnis,
+		MigrationTimeout: 1 * time.Second,
 		DrainOnShutdown:  true,
-	}, NewSystemNetworkStrategy(), AssignConsistentHashing{}).Run(ctx)
+		Report:           false,
+	}, NewMockNetworkStrategy(), AssignConsistentHashing{}).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")
 	}
