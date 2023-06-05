@@ -413,14 +413,14 @@ func (u *VniUpdate) RunOnce() error {
 	}
 	l.Uint64("vni", u.vni).Msg("updating vni")
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
-	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
+	_, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	cancel()
 	if err != nil {
 		return errors.Wrap(err, "failed to update vni")
 	}
-	if !resp.Succeeded {
-		log.Warn().Msg("failed to update vni: transaction failed")
-	}
+	//if !resp.Succeeded {
+	//	log.Warn().Msg("failed to update vni: transaction failed")
+	//}
 	return nil
 }
 

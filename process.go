@@ -154,18 +154,21 @@ func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState)
 		if assignment.Type == Failover {
 			stateType = FailoverDecided
 		}
-		err = d.db.NewVniUpdate(assignment.Vni).
-			LeaderState(leader).
-			Revision(assignment.State.Revision).
-			Type(stateType).
-			Current(assignment.State.Current, NodeLease).
-			Next(assignment.Next.Name, VniLease{AttachedLeaseType, assignment.Next.Lease}).
-			RunOnce()
-		if err != nil {
-			d.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
-		}
+		a := assignment
+		go func() {
+			err := d.db.NewVniUpdate(a.Vni).
+				LeaderState(leader).
+				Revision(a.State.Revision).
+				Type(stateType).
+				Current(a.State.Current, NodeLease).
+				Next(a.Next.Name, VniLease{AttachedLeaseType, a.Next.Lease}).
+				RunOnce()
+			if err != nil {
+				d.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+			}
+		}()
 	}
-	return errors.Wrap(err, "could not perform periodic assignment")
+	return nil
 }
 
 func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent) error {
