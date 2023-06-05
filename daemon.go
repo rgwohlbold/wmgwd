@@ -65,7 +65,7 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		timerEventIngestor:   NewTimerEventIngestor(),
 		newNodeEventIngestor: NewNodeEventIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
-		eventProcessor:       DefaultEventProcessor{},
+		eventProcessor:       NewDefaultEventProcessor(),
 		uids:                 uids,
 		log:                  log.With().Str("node", config.Node).Logger(),
 	}

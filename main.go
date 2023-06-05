@@ -13,6 +13,7 @@ import (
 func main() {
 	runtime.GOMAXPROCS(2) // vtysh and go stuff
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	zerolog.TimeFieldFormat = time.RFC3339Nano
 	fileInfo, err := os.Stderr.Stat()
 	if err != nil {
 		log.Error().Err(err).Msg("failed to stat stderr")
