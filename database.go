@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,9 +30,11 @@ const EtcdNodePrefix = "/wmgwd/node/"
 const EtcdLeaderPrefix = "/wmgwd/leader/"
 
 type Database struct {
-	client *v3.Client
-	node   string
-	lease  v3.LeaseID
+	client                *v3.Client
+	node                  string
+	lease                 v3.LeaseID
+	updatesInProgressLock sync.Mutex
+	updatesInProgress     map[uint64]int64
 }
 
 type VniLease struct {
@@ -57,11 +60,11 @@ type VniUpdatePart struct {
 }
 
 type VniUpdate struct {
-	vni         uint64
-	db          *Database
-	parts       []VniUpdatePart
-	conditions  []v3.Cmp
-	hasRevision bool
+	vni        uint64
+	db         *Database
+	parts      []VniUpdatePart
+	conditions []v3.Cmp
+	revision   int64
 }
 
 type VniStateType int
@@ -100,7 +103,7 @@ func NewDatabase(config Configuration) (*Database, error) {
 		return nil, err
 	}
 
-	return &Database{client: client, node: config.Node}, nil
+	return &Database{client: client, node: config.Node, updatesInProgress: map[uint64]int64{}}, nil
 }
 
 func (db *Database) CreateLeaseAndKeepalive(ctx context.Context) (<-chan *v3.LeaseKeepAliveResponse, context.CancelFunc, error) {
@@ -146,7 +149,7 @@ func (db *Database) Nodes() ([]Node, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 
-	resp, err := db.client.Get(ctx, EtcdNodePrefix, v3.WithPrefix())
+	resp, err := db.client.Get(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithSerializable())
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get from etcd")
 	}
@@ -217,7 +220,7 @@ func (db *Database) GetFullState(config Configuration, revision int64) (map[uint
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
 
-	ops := []v3.OpOption{v3.WithPrefix()}
+	ops := []v3.OpOption{v3.WithPrefix(), v3.WithSerializable()}
 	if revision != -1 {
 		ops = append(ops, v3.WithRev(revision))
 	}
@@ -267,6 +270,7 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 	if revision != -1 {
 		ops = append(ops, v3.WithRev(revision))
 	}
+	ops = append(ops, v3.WithSerializable())
 	resp, err := db.client.Get(ctx, EtcdVniPrefix+"/"+strconv.FormatUint(vni, 10)+"/", ops...)
 	if err != nil {
 		return VniState{}, err
@@ -313,7 +317,7 @@ func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
 }
 
 func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
-	return &VniUpdate{db: db, vni: vni}
+	return &VniUpdate{db: db, vni: vni, revision: -1}
 }
 
 func (u *VniUpdate) leaseTypeToOption(lease VniLease) []v3.OpOption {
@@ -366,7 +370,7 @@ func (u *VniUpdate) Report(report uint64) *VniUpdate {
 
 func (u *VniUpdate) Revision(revision int64) *VniUpdate {
 	u.conditions = append(u.conditions, v3.Compare(v3.ModRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniTypeSuffix), "<", revision+1))
-	u.hasRevision = true
+	u.revision = revision
 	return u
 }
 
@@ -376,9 +380,17 @@ func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
 }
 
 func (u *VniUpdate) RunOnce() error {
-	if !u.hasRevision {
+	if u.revision == -1 {
 		panic(errors.New("revision not set"))
 	}
+	u.db.updatesInProgressLock.Lock()
+	if u.db.updatesInProgress[u.vni] >= u.revision {
+		u.db.updatesInProgressLock.Unlock()
+		return nil
+	}
+	u.db.updatesInProgress[u.vni] = u.revision
+	u.db.updatesInProgressLock.Unlock()
+
 	ops := make([]v3.Op, 0)
 	hasType := false
 	l := log.Debug()
@@ -416,8 +428,13 @@ func (u *VniUpdate) RunOnce() error {
 	_, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	cancel()
 	if err != nil {
-		return errors.Wrap(err, "failed to update vni")
+		log.Error().Err(err).Msg("failed to update vni: transaction failed")
 	}
+	u.db.updatesInProgressLock.Lock()
+	if u.db.updatesInProgress[u.vni] == u.revision {
+		delete(u.db.updatesInProgress, u.vni)
+	}
+	u.db.updatesInProgressLock.Unlock()
 	//if !resp.Succeeded {
 	//	log.Warn().Msg("failed to update vni: transaction failed")
 	//}
