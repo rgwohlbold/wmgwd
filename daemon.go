@@ -20,6 +20,7 @@ type Configuration struct {
 	Vnis             []uint64
 	MigrationTimeout time.Duration
 	ScanInterval     time.Duration
+	DrainOnShutdown  bool
 }
 
 type Daemon struct {
@@ -124,7 +125,16 @@ func (d *Daemon) InitPeriodicArp(ctx context.Context) {
 	}()
 }
 
-func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan v3.WatchChan, error) {
+type DaemonState int
+
+const (
+	DatabaseConnected DaemonState = iota
+	DatabaseDisconnected
+	Drain
+	Exit
+)
+
+func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelFunc, drainCtx context.Context) (<-chan v3.WatchChan, <-chan v3.WatchChan, error) {
 	vniChanChan := make(chan v3.WatchChan, 1)
 	nodeChanChan := make(chan v3.WatchChan, 1)
 	var err error
@@ -153,18 +163,28 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 		}
 		wg.Done()
 
-		var ticker *time.Ticker
-		var tickerChan <-chan time.Time = nil
+		ticker := time.NewTicker(DatabaseOpenInterval)
+		status := DatabaseConnected
+		statusUpdateChan := make(chan DaemonState, 1)
+		statusUpdateChan <- status
 		for {
 			select {
 			case <-ctx.Done():
-				if cancel != nil {
-					cancel()
-				}
-				d.StopPeriodicArp()
-				return
-			case _, ok := <-respChan:
-				if !ok {
+				statusUpdateChan <- Exit
+			case <-drainCtx.Done():
+				statusUpdateChan <- Drain
+			case status = <-statusUpdateChan:
+				switch status {
+				case DatabaseConnected:
+					d.StartPeriodicArp()
+					vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+					nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+					err = d.db.Register(d.Config.Node, d.uids)
+					if err != nil {
+						log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
+						statusUpdateChan <- DatabaseDisconnected
+					}
+				case DatabaseDisconnected:
 					log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
 					d.StopPeriodicArp()
 					respChan = nil
@@ -173,26 +193,51 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 					if err != nil {
 						log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
 					}
-					ticker = time.NewTicker(DatabaseOpenInterval)
-					tickerChan = ticker.C
+				case Drain:
+					err = d.db.Unregister(d.Config.Node)
+					if err != nil {
+						log.Error().Err(err).Msg("failed to unregister node, Exit")
+						statusUpdateChan <- Exit
+					}
+				case Exit:
+					if status == DatabaseConnected {
+						cancel()
+						d.StopPeriodicArp()
+					}
+					ticker.Stop()
+					cancelDaemon()
+					return
 				}
-			case <-tickerChan:
-				newRespChan, newCancel, err := d.db.CreateLeaseAndKeepalive(ctx)
-				if err != nil {
-					continue
+			case _, ok := <-respChan:
+				if !ok {
+					statusUpdateChan <- DatabaseDisconnected
 				}
-				log.Info().Msg("database reopened")
-				d.StartPeriodicArp()
-				respChan = newRespChan
-				cancel = newCancel
-				ticker.Stop()
-				ticker = nil
-
-				vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-				nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-				err = d.db.Register(d.Config.Node, d.uids)
-				if err != nil {
-					log.Error().Err(err).Msg("failed to register node")
+			case <-ticker.C:
+				if status == DatabaseDisconnected {
+					newRespChan, newCancel, err := d.db.CreateLeaseAndKeepalive(ctx)
+					if err != nil {
+						continue
+					}
+					respChan = newRespChan
+					cancel = newCancel
+					statusUpdateChan <- DatabaseConnected
+				} else if status == Drain {
+					dbState, err := d.db.GetFullState(d.Config, -1)
+					if err != nil {
+						log.Error().Err(err).Msg("failed to get full state, exiting")
+						statusUpdateChan <- Exit
+					}
+					found := false
+					for _, vniState := range dbState {
+						if vniState.Current == d.Config.Node {
+							found = true
+							break
+						}
+					}
+					if !found {
+						log.Info().Msg("drain complete, exiting")
+						statusUpdateChan <- Exit
+					}
 				}
 			}
 		}
@@ -201,10 +246,14 @@ func (d *Daemon) SetupDatabase(ctx context.Context) (<-chan v3.WatchChan, <-chan
 	return vniChanChan, nodeChanChan, nil
 }
 
-func (d *Daemon) Run(ctx context.Context) error {
+func (d *Daemon) Run(drainCtx context.Context) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	d.InitPeriodicArp(ctx)
 	var err error
-	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx)
+
+	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx, cancel, drainCtx)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup database")
 	}
@@ -238,6 +287,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		NewReporter().Start(ctx, d)
 		wg.Done()
 	}()
+
+	<-drainCtx.Done()
+	if !d.Config.DrainOnShutdown {
+		cancel()
+	}
+	<-ctx.Done()
 
 	wg.Wait()
 	log.Info().Msg("exiting, withdrawing everything")

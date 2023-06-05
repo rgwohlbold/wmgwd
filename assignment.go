@@ -51,6 +51,10 @@ func (_ AssignSelf) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) 
 type AssignOther struct{}
 
 func (_ AssignOther) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+	if len(nodes) == 0 {
+		log.Error().Msg("no nodes to assign")
+		return nil
+	}
 	assignments := make([]Assignment, 0)
 	node := nodes[0]
 	if node.Name == d.Config.Node && len(nodes) > 1 {

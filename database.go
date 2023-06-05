@@ -176,6 +176,14 @@ func (db *Database) Register(node string, uids []uint64) error {
 	return errors.Wrap(err, "could not put to etcd")
 }
 
+func (db *Database) Unregister(node string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	defer cancel()
+
+	_, err := db.client.Delete(ctx, EtcdNodePrefix+node)
+	return errors.Wrap(err, "could not delete from etcd")
+}
+
 func stateTypeToString(state VniStateType) string {
 	switch state {
 	case Unassigned:

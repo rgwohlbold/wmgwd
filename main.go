@@ -35,8 +35,9 @@ func main() {
 	err = NewDaemon(Configuration{
 		ScanInterval:     1 * time.Second,
 		Node:             os.Args[1],
-		Vnis:             []uint64{100},
+		Vnis:             []uint64{100, 200, 300, 400, 500, 600, 700, 800, 900, 1000},
 		MigrationTimeout: 5 * time.Second,
+		DrainOnShutdown:  true,
 	}, NewSystemNetworkStrategy(), AssignConsistentHashing{}).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")
