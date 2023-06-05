@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
 	"math/rand"
@@ -35,6 +36,7 @@ type Daemon struct {
 	db                   *Database
 	periodicArpChan      chan bool
 	uids                 []uint64
+	log                  zerolog.Logger
 }
 
 type EventIngestor[E any] interface {
@@ -64,6 +66,7 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		leaderEventIngestor:  LeaderEventIngestor{},
 		eventProcessor:       DefaultEventProcessor{},
 		uids:                 uids,
+		log:                  log.With().Str("node", config.Node).Logger(),
 	}
 }
 
@@ -108,14 +111,14 @@ func (d *Daemon) InitPeriodicArp(ctx context.Context) {
 				if enabled {
 					state, err := d.db.GetFullState(d.Config, -1)
 					if err != nil {
-						log.Error().Err(err).Msg("periodic arp: failed to get full state")
+						d.log.Error().Err(err).Msg("periodic arp: failed to get full state")
 						continue
 					}
 					for vni, vniState := range state {
 						if vniState.Type == Idle && vniState.Current == d.Config.Node {
 							err = d.networkStrategy.SendGratuitousArp(vni)
 							if err != nil {
-								log.Error().Err(err).Msg("periodic arp: failed to send gratuitous arp")
+								d.log.Error().Err(err).Msg("periodic arp: failed to send gratuitous arp")
 							}
 						}
 					}
@@ -159,7 +162,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		err = d.db.Register(d.Config.Node, d.uids)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to register node")
+			d.log.Error().Err(err).Msg("failed to register node")
 		}
 		wg.Done()
 
@@ -187,32 +190,32 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 					err = d.db.Register(d.Config.Node, d.uids)
 					if err != nil {
-						log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
+						d.log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
 						statusUpdateChan <- DatabaseDisconnected
 					}
 				case DatabaseDisconnected:
-					log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
+					d.log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
 					d.StopPeriodicArp()
 					respChan = nil
 					cancel()
 					err = d.WithdrawAll()
 					if err != nil {
-						log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
+						d.log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
 					}
 				case Drain:
-					log.Info().Msg("drain requested, unregistering node")
+					d.log.Info().Msg("drain requested, unregistering node")
 					err = d.db.Unregister(d.Config.Node)
 					if err != nil {
-						log.Error().Err(err).Msg("failed to unregister node, Exit")
+						d.log.Error().Err(err).Msg("failed to unregister node, Exit")
 						statusUpdateChan <- Exit
 					}
 					nodes, err := d.db.Nodes()
 					if err != nil {
-						log.Error().Err(err).Msg("failed to get nodes, Exit")
+						d.log.Error().Err(err).Msg("failed to get nodes, Exit")
 						statusUpdateChan <- Exit
 					}
 					if len(nodes) == 0 {
-						log.Info().Msg("no nodes left, exiting")
+						d.log.Info().Msg("no nodes left, exiting")
 						statusUpdateChan <- Exit
 					}
 				case Exit:
@@ -238,7 +241,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				} else if status == Drain {
 					dbState, err := d.db.GetFullState(d.Config, -1)
 					if err != nil {
-						log.Error().Err(err).Msg("failed to get full state, exiting")
+						d.log.Error().Err(err).Msg("failed to get full state, exiting")
 						statusUpdateChan <- Exit
 					}
 					found := false
@@ -249,7 +252,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 						}
 					}
 					if !found {
-						log.Info().Msg("drain complete, exiting")
+						d.log.Info().Msg("drain complete, exiting")
 						statusUpdateChan <- Exit
 					}
 				}
@@ -278,9 +281,9 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	}
 
 	leaderChan := make(chan LeaderState, 1)
-	vniChan := make(chan VniEvent, len(d.Config.Vnis))
-	newNodeChan := make(chan NewNodeEvent)
-	timerChan := make(chan TimerEvent)
+	vniChan := make(chan VniEvent, 1)
+	newNodeChan := make(chan NewNodeEvent, 1)
+	timerChan := make(chan TimerEvent, 1)
 
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d, d.vniEventIngestor, vniChan, wg)
@@ -292,7 +295,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	go func() {
 		err := d.eventProcessor.Process(ctx, d, vniChan, leaderChan, newNodeChan, timerChan)
 		if err != nil {
-			log.Fatal().Err(err).Msg("failed to process events")
+			d.log.Fatal().Err(err).Msg("failed to process events")
 		}
 		wg.Done()
 	}()
@@ -309,7 +312,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	<-ctx.Done()
 
 	wg.Wait()
-	log.Debug().Msg("exiting, withdrawing everything")
+	d.log.Debug().Msg("exiting, withdrawing everything")
 	err = d.WithdrawAll()
 	return errors.Wrap(err, "failed to withdraw all on shutdown")
 }

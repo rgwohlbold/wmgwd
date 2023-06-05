@@ -124,11 +124,13 @@ func (db *Database) CreateLeaseAndKeepalive(ctx context.Context) (<-chan *v3.Lea
 func (db *Database) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	_, err := db.client.Revoke(ctx, db.lease)
-	if err != nil {
-		log.Error().Err(err).Msg("could not revoke lease")
+	if db.lease != 0 {
+		_, err := db.client.Revoke(ctx, db.lease)
+		if err != nil {
+			log.Error().Err(err).Msg("could not revoke lease")
+		}
 	}
-	err = db.client.Close()
+	err := db.client.Close()
 	if err != nil {
 		log.Error().Err(err).Msg("could not close client")
 	}
@@ -436,6 +438,7 @@ func (u *VniUpdate) RunWithRetry() {
 			if timeout > EtcdMaxTimeout {
 				timeout = EtcdMaxTimeout
 			}
+			time.Sleep(timeout)
 		}
 	}()
 

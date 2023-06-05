@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"math/rand"
@@ -51,40 +52,52 @@ func RandStringRunes(n int) string {
 	return string(b)
 }
 
-func RunTestDaemon(t *testing.T, wg *sync.WaitGroup, as AssignmentStrategy, beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) {
-	ns := NewMockNetworkStrategy()
+type TestDaemon struct {
+	daemon *Daemon
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func NewTestDaemon(as AssignmentStrategy, beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) TestDaemon {
 	config := Configuration{
-		Node:             "node-test-" + RandStringRunes(10),
+		Node:             RandStringRunes(3),
 		ScanInterval:     1 * time.Second,
 		Vnis:             []uint64{100},
 		MigrationTimeout: 0,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	daemon := NewDaemon(config, ns, as)
+	daemon := NewDaemon(config, NewMockNetworkStrategy(), as)
 	daemon.eventProcessor = EventProcessorWrapper{
 		cancel:         cancel,
 		eventProcessor: daemon.eventProcessor,
 		beforeVniEvent: beforeVniEvent,
 		afterVniEvent:  afterVniEvent,
 	}
+	return TestDaemon{
+		daemon: daemon,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+func (d TestDaemon) Run(t *testing.T, wg *sync.WaitGroup) {
 	go func() {
-		defer cancel()
-		err := daemon.Run(ctx)
+		defer d.cancel()
+		err := d.daemon.Run(d.ctx)
 		if err != nil {
 			t.Errorf("daemon.Run(ctx) = %v; want nil", err)
 		}
 		wg.Done()
 	}()
-
 }
 
 // TestSingleDaemon tests that the leader assigns itself to unassigned VNIs on startup
 func TestSingleDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	assertHit := false
-	var wg sync.WaitGroup
+	wg := sync.WaitGroup{}
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignSelf{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	NewTestDaemon(AssignSelf{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
@@ -106,7 +119,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 			return VerdictStop
 		}
 		return VerdictContinue
-	})
+	}).Run(t, &wg)
 	wg.Wait()
 	if !assertHit {
 		t.Errorf("assertHit = %v; want true", assertHit)
@@ -136,8 +149,8 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
+	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !recovered {
 		t.Errorf("recovered = %v; want true", recovered)
@@ -176,10 +189,10 @@ func TestMigration(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
+	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	wg.Add(2)
-	RunTestDaemon(t, &wg, AssignOther{}, NoopVniEvent, afterVniFunc)
+	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !leaderStopped {
 		t.Errorf("leaderStopped = %v; want true", leaderStopped)
@@ -222,9 +235,9 @@ func TestCrashFailoverDecided(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(3)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !thirdReachesIdle {
 		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
@@ -276,11 +289,11 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 		return VerdictContinue
 	}
 	wg.Add(1)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	wg.Add(3)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
-	RunTestDaemon(t, &wg, AssignOther{}, beforeVniFunc, afterVniFunc)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !secondReachesIdle {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesIdle)
@@ -315,7 +328,42 @@ func TestCrashNextEvpnWithdrawn(t *testing.T) {
 	SubTestCrashMigrationDecided(t, MigrationEvpnWithdrawn, CrashNext)
 }
 
+func TestDrainOnShutdown(t *testing.T) {
+	WipeDatabase(t)
+	var lock sync.Mutex
+	var wg sync.WaitGroup
+	leaderAssignedItself := false
+	secondReachesMigrate := false
+	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+		lock.Lock()
+		defer lock.Unlock()
+		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
+			log.Info().Str("node", d.Config.Node).Msg("leader assigned itself")
+			leaderAssignedItself = true
+			return VerdictStop
+		} else if leaderAssignedItself && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+			log.Info().Str("node", d.Config.Node).Msg("second reaches MigrationDecided")
+			secondReachesMigrate = true
+			return VerdictStop
+		}
+		return VerdictContinue
+	}
+	wg.Add(2)
+	testDaemon1 := NewTestDaemon(AssignSelf{}, NoopVniEvent, afterVniFunc)
+	testDaemon1.daemon.Config.DrainOnShutdown = true
+	testDaemon2 := NewTestDaemon(AssignSelf{}, NoopVniEvent, afterVniFunc)
+	testDaemon2.daemon.Config.DrainOnShutdown = true
+	testDaemon1.Run(t, &wg)
+	testDaemon2.Run(t, &wg)
+	wg.Wait()
+	if !secondReachesMigrate {
+		t.Errorf("secondReachesIdle = %v; want true", secondReachesMigrate)
+	}
+
+}
+
 func TestMain(m *testing.M) {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	cmd := exec.Command("/home/richard/progs/etcd/bin/etcd")
 	err := cmd.Start()
 	if err != nil {

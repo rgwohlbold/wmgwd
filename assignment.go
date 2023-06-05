@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/emirpasic/gods/maps/treemap"
 	"github.com/emirpasic/gods/utils"
-	"github.com/rs/zerolog/log"
 )
 
 type AssignmentType int
@@ -27,22 +26,24 @@ type AssignmentStrategy interface {
 type AssignSelf struct{}
 
 func (_ AssignSelf) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
-	var self Node
-	for _, node := range nodes {
-		if node.Name == d.Config.Node {
-			self = node
+	if len(nodes) == 0 {
+		return nil
+	}
+	var node Node
+	for _, n := range nodes {
+		if n.Name == d.Config.Node {
+			node = n
 		}
 	}
-	if self.Name == "" {
-		log.Error().Msg("could not find self in node list")
-		return nil
+	if node.Name == "" {
+		node = nodes[0]
 	}
 	assignments := make([]Assignment, 0)
 	for vni, vniState := range state {
 		if vniState.Type == Unassigned {
-			assignments = append(assignments, Assignment{vni, *vniState, Failover, self})
-		} else if vniState.Type == Idle && vniState.Current != d.Config.Node {
-			assignments = append(assignments, Assignment{vni, *vniState, Migration, self})
+			assignments = append(assignments, Assignment{vni, *vniState, Failover, node})
+		} else if vniState.Type == Idle && vniState.Current != node.Name {
+			assignments = append(assignments, Assignment{vni, *vniState, Migration, node})
 		}
 	}
 	return assignments
@@ -52,7 +53,6 @@ type AssignOther struct{}
 
 func (_ AssignOther) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
 	if len(nodes) == 0 {
-		log.Error().Msg("no nodes to assign")
 		return nil
 	}
 	assignments := make([]Assignment, 0)

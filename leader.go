@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"time"
 )
@@ -16,13 +16,13 @@ type LeaderEventIngestor struct{}
 
 const LeaderTickerInterval = 1 * time.Second
 
-func reliably(ctx context.Context, label string, fn func() error) {
+func reliably(ctx context.Context, log zerolog.Logger, fn func() error) {
 	for {
 		err := fn()
 		if err == nil {
 			return
 		}
-		log.Error().Err(err).Str("label", label).Msg("reliably: failed")
+		log.Error().Err(err).Msg("reliably: failed")
 		select {
 		case <-ctx.Done():
 			return
@@ -38,7 +38,7 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 	electionKey := EtcdLeaderPrefix[:len(EtcdLeaderPrefix)-1]
 
 	var session *concurrency.Session
-	reliably(ctx, "leader-election: session", func() error {
+	reliably(ctx, d.log.With().Str("action", "leader-election: session").Logger(), func() error {
 		var err error
 		session, err = concurrency.NewSession(d.db.client, concurrency.WithTTL(EtcdLeaseTTL))
 		return err
@@ -48,23 +48,23 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 	defer func(session *concurrency.Session) {
 		err := session.Close()
 		if err != nil {
-			log.Error().Err(err).Msg("leader-election: failed to close session")
+			d.log.Error().Err(err).Msg("leader-election: failed to close session")
 		}
 	}(session)
 
 	// campaign forever
 	for {
 	campaign:
-		reliably(ctx, "leader-election: campaign", func() error {
+		reliably(ctx, d.log.With().Str("action", "leader-election: campaign").Logger(), func() error {
 			err := election.Campaign(ctx, d.Config.Node)
 			if err != nil {
 				err = session.Close()
 				if err != nil {
-					log.Error().Err(err).Msg("leader-election: failed to close session")
+					d.log.Error().Err(err).Msg("leader-election: failed to close session")
 				}
 				newSession, err := concurrency.NewSession(d.db.client, concurrency.WithTTL(EtcdLeaseTTL))
 				if err != nil {
-					log.Error().Err(err).Msg("leader-election: failed to create new session")
+					d.log.Error().Err(err).Msg("leader-election: failed to create new session")
 				} else {
 					session = newSession
 				}
@@ -72,8 +72,13 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 			}
 			return err
 		})
+		select {
+		case <-ctx.Done():
+			goto end
+		default:
+		}
 		leaderChan <- LeaderState{Node: d.Config.Node, Key: election.Key()}
-		log.Info().Str("key", election.Key()).Msg("leader-election: got elected")
+		d.log.Info().Str("key", election.Key()).Msg("leader-election: got elected")
 		for {
 			select {
 			case <-ctx.Done():
@@ -81,12 +86,12 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 			case <-time.After(LeaderTickerInterval):
 				resp, err := election.Leader(ctx)
 				if err == concurrency.ErrElectionNoLeader {
-					log.Info().Msg("leader-election: no leader")
+					d.log.Info().Msg("leader-election: no leader")
 					goto campaign
 				} else if err == context.Canceled {
 					goto end
 				} else if err != nil {
-					log.Error().Err(err).Msg("leader-election: failed to get leader")
+					d.log.Error().Err(err).Msg("leader-election: failed to get leader")
 					goto campaign
 				}
 				leader := string(resp.Kvs[0].Value)
@@ -99,9 +104,9 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 end:
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	defer cancel()
-	log.Debug().Msg("leader-election: context done")
+	d.log.Debug().Msg("leader-election: context done")
 	err := election.Resign(ctx)
 	if err != nil {
-		log.Error().Err(err).Msg("leader-election: failed to resign")
+		d.log.Error().Err(err).Msg("leader-election: failed to resign")
 	}
 }

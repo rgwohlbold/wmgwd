@@ -141,7 +141,7 @@ func (p DefaultEventProcessor) ProcessVniEvent(d *Daemon, leaderState LeaderStat
 func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState) error {
 	state, err := d.db.GetFullState(d.Config, -1)
 	if err != nil {
-		log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
+		d.log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
 		return errors.Wrap(err, "could not get state")
 	}
 	nodes, err := d.db.Nodes()
@@ -162,7 +162,7 @@ func (p DefaultEventProcessor) PeriodicAssignment(d *Daemon, leader LeaderState)
 			Next(assignment.Next.Name, VniLease{AttachedLeaseType, assignment.Next.Lease}).
 			RunOnce()
 		if err != nil {
-			log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+			d.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
 		}
 	}
 	return errors.Wrap(err, "could not perform periodic assignment")
@@ -173,39 +173,54 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 	signal.Notify(c, syscall.SIGUSR1)
 
 	leader := <-leaderChan
+	vniEvents := make([]VniEvent, 0)
+	vniEventsReady := make(chan struct{}, 1)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Msg("event-processor: context done")
+			d.log.Debug().Msg("event-processor: context done")
 			return nil
 		case <-time.After(d.Config.ScanInterval):
 			if leader.Node == d.Config.Node {
 				err := p.PeriodicAssignment(d, leader)
 				if err != nil {
-					log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
+					d.log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
 				}
 			}
 		case newNodeEvent := <-newNodeChan:
 			if leader.Node == d.Config.Node && newNodeEvent.Node.Name != d.Config.Node {
 				err := p.PeriodicAssignment(d, leader)
 				if err != nil {
-					log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
+					d.log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
 				}
 			}
 		case event := <-vniChan:
-			log.Debug().Interface("event", event).Msg("event-processor: processing event")
-			err := p.ProcessVniEvent(d, leader, event, d.db)
-			if err != nil {
-				log.Fatal().Err(err).Msg("event-processor: failed to process event")
+			d.log.Debug().Msg("event-processor: received event through channel")
+			vniEvents = append(vniEvents, event)
+			if len(vniEventsReady) == 0 {
+				vniEventsReady <- struct{}{}
 			}
+		case <-vniEventsReady:
+			for _, event := range vniEvents {
+				err := p.ProcessVniEvent(d, leader, event, d.db)
+				if err != nil {
+					d.log.Fatal().Err(err).Msg("event-processor: failed to process event")
+				}
+			}
+			vniEvents = make([]VniEvent, 0)
 		case leader = <-leaderChan:
+			d.log.Debug().Msg("event-processor: leader")
 			states, err := d.db.GetFullState(d.Config, -1)
 			if err != nil {
-				log.Fatal().Err(err).Msg("event-processor: failed to get full state")
+				d.log.Fatal().Err(err).Msg("event-processor: failed to get full state")
 			}
 			for vni, state := range states {
-				vniChan <- VniEvent{Vni: vni, State: *state}
+				vniEvents = append(vniEvents, VniEvent{Vni: vni, State: *state})
+				if len(vniEventsReady) == 0 {
+					vniEventsReady <- struct{}{}
+				}
 			}
+			d.log.Debug().Msg("event-processor: stopped leader")
 		case timerEvent := <-timerChan:
 			timerEvent.Func()
 		}
@@ -213,28 +228,28 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 }
 
 func (p EventProcessorWrapper) Process(ctx context.Context, d *Daemon, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent, timerChan <-chan TimerEvent) error {
+	innerCtx, innerCancel := context.WithCancel(context.Background())
 	internalVniChan := make(chan VniEvent, cap(vniChan))
-	internalLeaderChan := make(chan LeaderState)
-	internalNewNodeChan := make(chan NewNodeEvent)
-	internalTimerChan := make(chan TimerEvent)
+	internalLeaderChan := make(chan LeaderState, 1)
+	internalNewNodeChan := make(chan NewNodeEvent, 1)
+	internalTimerChan := make(chan TimerEvent, 1)
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		leaderState := <-leaderChan
 		internalLeaderChan <- leaderState
 		for {
 			select {
-			case <-ctx.Done():
+			case <-innerCtx.Done():
 				return
 			case event := <-vniChan:
 				if p.beforeVniEvent(d, leaderState, event) == VerdictStop {
 					p.cancel()
-					return
 				}
 				internalVniChan <- event
 				if p.afterVniEvent(d, leaderState, event) == VerdictStop {
 					p.cancel()
-					return
 				}
 			case leaderState = <-leaderChan:
 				internalLeaderChan <- leaderState
@@ -245,5 +260,11 @@ func (p EventProcessorWrapper) Process(ctx context.Context, d *Daemon, vniChan c
 			}
 		}
 	}()
-	return p.eventProcessor.Process(ctx, d, internalVniChan, internalLeaderChan, internalNewNodeChan, internalTimerChan)
+	var err error
+	go func() {
+		err = p.eventProcessor.Process(ctx, d, internalVniChan, internalLeaderChan, internalNewNodeChan, internalTimerChan)
+		innerCancel()
+		wg.Done()
+	}()
+	return err
 }

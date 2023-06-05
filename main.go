@@ -12,15 +12,6 @@ import (
 
 func main() {
 	runtime.GOMAXPROCS(2) // vtysh and go stuff
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	fileInfo, err := os.Stderr.Stat()
-	if err != nil {
-		log.Error().Err(err).Msg("failed to stat stderr")
-	} else {
-		if fileInfo.Mode()&os.ModeCharDevice != 0 {
-			log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-		}
-	}
 
 	if len(os.Args) != 2 {
 		log.Fatal().Msg("usage: wmgwd <node>")

@@ -27,7 +27,7 @@ func (r *Reporter) Report(d *Daemon) error {
 		var newReport uint64
 		newReport, err = d.networkStrategy.ByteCounter(vni)
 		if err != nil {
-			log.Error().Err(err).Msg("reporter: failed to get byte counter")
+			d.log.Error().Err(err).Msg("reporter: failed to get byte counter")
 			continue
 		}
 		err = d.db.NewVniUpdate(vni).Revision(state.Revision).Report(newReport).RunOnce()

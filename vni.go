@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -30,7 +29,7 @@ func (i VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("vni-watcher: context done")
+			d.log.Debug().Msg("vni-watcher: context done")
 			return
 		case e, ok := <-watchChan:
 			if !ok {
@@ -42,27 +41,29 @@ func (i VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 			for _, ev := range e.Events {
 				parsedVni, err := d.db.VniFromKv(ev.Kv)
 				if err != nil {
-					log.Error().Err(err).Msg("vni-watcher: failed to parse vni")
+					d.log.Error().Err(err).Msg("vni-watcher: failed to parse vni")
 					continue
 				}
 				if vni != InvalidVni && parsedVni != vni {
-					log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got state for multiple vnis")
+					d.log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got state for multiple vnis")
 					continue
 				}
 				vni = parsedVni
 			}
 			if vni == InvalidVni {
-				log.Error().Msg("vni-watcher: got event for no vnis")
+				d.log.Error().Msg("vni-watcher: got event for no vnis")
 				continue
 			}
 
 			state, err := d.db.GetState(vni, revision)
 			if err != nil {
-				log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
+				d.log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
 				continue
 			}
+			if len(ch) == cap(ch) {
+				d.log.Warn().Uint64("vni", vni).Msg("vni-watcher: channel full")
+			}
 			ch <- VniEvent{Vni: vni, State: state}
-			log.Debug().Uint64("vni", vni).Interface("state", state).Msg("vni-watcher: got state")
 		}
 	}
 }

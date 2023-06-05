@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"github.com/rs/zerolog/log"
 	"sync"
 	"time"
 )
@@ -27,7 +26,7 @@ func NewTimerEventIngestor() TimerEventIngestor {
 }
 
 func (i TimerEventIngestor) Enqueue(timeout time.Duration, event TimerEvent) {
-	vniChan := make(chan TimerEvent)
+	vniChan := make(chan TimerEvent, 1)
 	go func() {
 		<-time.After(timeout)
 		vniChan <- event
@@ -42,7 +41,7 @@ func (i TimerEventIngestor) Enqueue(timeout time.Duration, event TimerEvent) {
 	}
 }
 
-func (i TimerEventIngestor) Ingest(ctx context.Context, _ *Daemon, eventChan chan<- TimerEvent) {
+func (i TimerEventIngestor) Ingest(ctx context.Context, d *Daemon, eventChan chan<- TimerEvent) {
 	for {
 		currentTimer := make(chan TimerEvent)
 		if len(*i.timers) > 0 {
@@ -50,7 +49,7 @@ func (i TimerEventIngestor) Ingest(ctx context.Context, _ *Daemon, eventChan cha
 		}
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("timer: context done")
+			d.log.Debug().Msg("timer: context done")
 			return
 		case <-i.newTimerChan:
 			continue
