@@ -167,12 +167,18 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		status := DatabaseConnected
 		statusUpdateChan := make(chan DaemonState, 1)
 		statusUpdateChan <- status
+
+		drainChan := drainCtx.Done()
+		exitChan := ctx.Done()
+
 		for {
 			select {
-			case <-ctx.Done():
+			case <-exitChan:
 				statusUpdateChan <- Exit
-			case <-drainCtx.Done():
+				exitChan = nil
+			case <-drainChan:
 				statusUpdateChan <- Drain
+				drainChan = nil
 			case status = <-statusUpdateChan:
 				switch status {
 				case DatabaseConnected:
@@ -194,16 +200,24 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 						log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
 					}
 				case Drain:
+					log.Info().Msg("drain requested, unregistering node")
 					err = d.db.Unregister(d.Config.Node)
 					if err != nil {
 						log.Error().Err(err).Msg("failed to unregister node, Exit")
 						statusUpdateChan <- Exit
 					}
-				case Exit:
-					if status == DatabaseConnected {
-						cancel()
-						d.StopPeriodicArp()
+					nodes, err := d.db.Nodes()
+					if err != nil {
+						log.Error().Err(err).Msg("failed to get nodes, Exit")
+						statusUpdateChan <- Exit
 					}
+					if len(nodes) == 0 {
+						log.Info().Msg("no nodes left, exiting")
+						statusUpdateChan <- Exit
+					}
+				case Exit:
+					cancel()
+					d.StopPeriodicArp()
 					ticker.Stop()
 					cancelDaemon()
 					return
@@ -295,7 +309,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	<-ctx.Done()
 
 	wg.Wait()
-	log.Info().Msg("exiting, withdrawing everything")
+	log.Debug().Msg("exiting, withdrawing everything")
 	err = d.WithdrawAll()
 	return errors.Wrap(err, "failed to withdraw all on shutdown")
 }

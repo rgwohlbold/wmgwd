@@ -378,7 +378,17 @@ func (u *VniUpdate) RunOnce() error {
 		panic(errors.New("revision not set"))
 	}
 	ops := make([]v3.Op, 0)
-	l := log.Info()
+	hasType := false
+	l := log.Debug()
+	for _, part := range u.parts {
+		if part.Key == EtcdVniTypeSuffix {
+			hasType = true
+			break
+		}
+	}
+	if hasType {
+		l = log.Info()
+	}
 	for _, part := range u.parts {
 		leaseOption := u.leaseTypeToOption(part.Lease)
 		ops = append(ops, v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption...))
@@ -399,7 +409,7 @@ func (u *VniUpdate) RunOnce() error {
 			}
 		}
 	}
-	l.Msg("updating vni")
+	l.Uint64("vni", u.vni).Msg("updating vni")
 	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
 	resp, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	cancel()

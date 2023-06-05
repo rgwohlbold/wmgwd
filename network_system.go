@@ -49,7 +49,7 @@ func (s *SystemNetworkStrategy) vtysh(commands []string) error {
 }
 
 func (s *SystemNetworkStrategy) AdvertiseEvpn(vni uint64) error {
-	log.Info().Uint64("vni", vni).Msg("advertising evpn")
+	log.Debug().Uint64("vni", vni).Msg("advertising evpn")
 	return s.vtysh([]string{
 		"configure terminal",
 		"route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
@@ -62,7 +62,7 @@ func (s *SystemNetworkStrategy) AdvertiseEvpn(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
-	log.Info().Uint64("vni", vni).Msg("withdrawing evpn")
+	log.Debug().Uint64("vni", vni).Msg("withdrawing evpn")
 	return s.vtysh([]string{
 		"configure terminal",
 		"no route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
@@ -73,7 +73,7 @@ func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
-	log.Info().Msg("advertising ospf")
+	log.Debug().Msg("advertising ospf")
 	return s.vtysh([]string{
 		"configure terminal",
 		"interface " + s.bridgeName(vni),
@@ -85,7 +85,7 @@ func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) WithdrawOspf(vni uint64) error {
-	log.Info().Msg("withdrawing ospf")
+	log.Debug().Msg("withdrawing ospf")
 	return s.vtysh([]string{
 		"configure terminal",
 		"interface " + s.bridgeName(vni),
@@ -110,7 +110,7 @@ func (s *SystemNetworkStrategy) DisableArp(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
-	log.Info().Uint64("vni", vni).Msg("sending gratuitous arp")
+	log.Debug().Uint64("vni", vni).Msg("sending gratuitous arp")
 	iface, err := net.InterfaceByName(s.bridgeName(vni))
 	if err != nil {
 		return errors.Wrap(err, "could not get interface")

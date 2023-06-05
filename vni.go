@@ -62,6 +62,7 @@ func (i VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEv
 				continue
 			}
 			ch <- VniEvent{Vni: vni, State: state}
+			log.Debug().Uint64("vni", vni).Interface("state", state).Msg("vni-watcher: got state")
 		}
 	}
 }

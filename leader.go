@@ -83,6 +83,11 @@ func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan c
 				if err == concurrency.ErrElectionNoLeader {
 					log.Info().Msg("leader-election: no leader")
 					goto campaign
+				} else if err == context.Canceled {
+					goto end
+				} else if err != nil {
+					log.Error().Err(err).Msg("leader-election: failed to get leader")
+					goto campaign
 				}
 				leader := string(resp.Kvs[0].Value)
 				if leader != d.Config.Node {

@@ -193,6 +193,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				}
 			}
 		case event := <-vniChan:
+			log.Debug().Interface("event", event).Msg("event-processor: processing event")
 			err := p.ProcessVniEvent(d, leader, event, d.db)
 			if err != nil {
 				log.Fatal().Err(err).Msg("event-processor: failed to process event")

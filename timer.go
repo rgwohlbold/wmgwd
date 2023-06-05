@@ -8,8 +8,9 @@ import (
 )
 
 type TimerEventIngestor struct {
-	newTimerChan chan chan TimerEvent
+	timers       *[]chan TimerEvent
 	lock         *sync.Mutex
+	newTimerChan chan struct{}
 }
 
 type TimerEvent struct {
@@ -17,42 +18,46 @@ type TimerEvent struct {
 }
 
 func NewTimerEventIngestor() TimerEventIngestor {
+	timers := make([]chan TimerEvent, 0)
 	return TimerEventIngestor{
-		newTimerChan: make(chan chan TimerEvent, 1), // capacity 1 to avoid blocking, TimerEventIngestor may have exited before last enqueue
 		lock:         &sync.Mutex{},
+		timers:       &timers,
+		newTimerChan: make(chan struct{}, 1),
 	}
 }
 
 func (i TimerEventIngestor) Enqueue(timeout time.Duration, event TimerEvent) {
-	i.lock.Lock()
-	defer i.lock.Unlock()
-
 	vniChan := make(chan TimerEvent)
 	go func() {
 		<-time.After(timeout)
 		vniChan <- event
 	}()
-	i.newTimerChan <- vniChan
+
+	i.lock.Lock()
+	defer i.lock.Unlock()
+
+	*i.timers = append(*i.timers, vniChan)
+	if len(i.newTimerChan) == 0 {
+		i.newTimerChan <- struct{}{}
+	}
 }
 
 func (i TimerEventIngestor) Ingest(ctx context.Context, _ *Daemon, eventChan chan<- TimerEvent) {
-	timers := make([]chan TimerEvent, 0)
 	for {
 		currentTimer := make(chan TimerEvent)
-		if len(timers) > 0 {
-			currentTimer = timers[0]
+		if len(*i.timers) > 0 {
+			currentTimer = (*i.timers)[0]
 		}
 		select {
 		case <-ctx.Done():
 			log.Debug().Msg("timer: context done")
 			return
-		case newTimer := <-i.newTimerChan:
-			timers = append(timers, newTimer)
+		case <-i.newTimerChan:
 			continue
 		case event := <-currentTimer:
 			eventChan <- event
 			i.lock.Lock()
-			timers = timers[1:]
+			*i.timers = (*i.timers)[1:]
 			i.lock.Unlock()
 		}
 	}
