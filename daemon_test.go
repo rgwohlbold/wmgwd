@@ -65,9 +65,17 @@ func NewTestDaemon(as AssignmentStrategy, beforeVniEvent func(*Daemon, LeaderSta
 		Vnis:             []uint64{100},
 		MigrationTimeout: 0,
 	}
+	newAs := as
+	switch as.(type) {
+	case AssignSelf:
+		newAs = AssignSelf{Config: &config}
+	case AssignOther:
+		newAs = AssignOther{Config: &config}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	daemon := NewDaemon(config, NewMockNetworkStrategy(), as)
+	daemon := NewDaemon(config, NewMockNetworkStrategy(), newAs)
 	daemon.eventProcessor = EventProcessorWrapper{
+		daemon:         daemon,
 		cancel:         cancel,
 		eventProcessor: daemon.eventProcessor,
 		beforeVniEvent: beforeVniEvent,
@@ -97,7 +105,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	assertHit := false
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	NewTestDaemon(AssignSelf{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	NewTestDaemon(AssignConsistentHashing{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)

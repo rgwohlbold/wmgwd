@@ -56,17 +56,18 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 	for i := range uids {
 		uids[i] = rand.Uint64()
 	}
-	return &Daemon{
+	daemon := &Daemon{
 		Config:               config,
 		assignmentStrategy:   as,
 		networkStrategy:      ns,
 		vniEventIngestor:     VniEventIngestor{},
 		newNodeEventIngestor: NewNodeEventIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
-		eventProcessor:       NewDefaultEventProcessor(),
 		uids:                 uids,
 		log:                  log.With().Str("node", config.Node).Logger(),
 	}
+	daemon.eventProcessor = NewDefaultEventProcessor(daemon)
+	return daemon
 }
 
 func (d *Daemon) WithdrawAll() error {
@@ -290,7 +291,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 
 	wg.Add(1)
 	go func() {
-		err := d.eventProcessor.Process(ctx, d, vniChan, leaderChan, newNodeChan)
+		err := d.eventProcessor.Process(ctx, vniChan, leaderChan, newNodeChan)
 		if err != nil {
 			d.log.Fatal().Err(err).Msg("failed to process events")
 		}

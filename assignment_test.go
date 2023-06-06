@@ -25,9 +25,9 @@ func TestAssignsUnassigned(t *testing.T) {
 		1: {Type: Unassigned},
 	}
 	config := Configuration{Node: "node1"}
-	strategies := []AssignmentStrategy{AssignSelf{}, AssignOther{}, AssignGreedy{}}
+	strategies := []AssignmentStrategy{AssignSelf{Config: &config}, AssignOther{Config: &config}, AssignGreedy{}}
 	for _, strategy := range strategies {
-		assignment := strategy.Assign(&Daemon{Config: config}, nodes, state)
+		assignment := strategy.Assign(nodes, state)
 		AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Failover, nodes[0]})
 	}
 }
@@ -41,7 +41,7 @@ func TestAssignSelfMigrates(t *testing.T) {
 		1: {Type: Idle, Current: "node1"},
 	}
 	config := Configuration{Node: "node2"}
-	assignment := AssignSelf{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignSelf{Config: &config}.Assign(nodes, state)
 	AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Migration, nodes[1]})
 }
 
@@ -54,7 +54,7 @@ func TestAssignSelfDoesNothing(t *testing.T) {
 		1: {Type: Idle, Current: "node1"},
 	}
 	config := Configuration{Node: "node1"}
-	assignment := AssignSelf{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignSelf{Config: &config}.Assign(nodes, state)
 	if len(assignment) != 0 {
 		t.Errorf("expected no assignment, got %d", len(assignment))
 	}
@@ -69,7 +69,7 @@ func TestAssignOtherMigrates(t *testing.T) {
 		1: {Type: Idle, Current: "node1"},
 	}
 	config := Configuration{Node: "node1"}
-	assignment := AssignOther{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignOther{Config: &config}.Assign(nodes, state)
 	AssertSingleAssignment(t, assignment, Assignment{1, *state[1], Migration, nodes[1]})
 
 }
@@ -82,7 +82,7 @@ func TestAssignOtherDoesNothing(t *testing.T) {
 		1: {Type: Idle, Current: "node2"},
 	}
 	config := Configuration{Node: "node1"}
-	assignment := AssignOther{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignOther{Config: &config}.Assign(nodes, state)
 	if len(assignment) != 0 {
 		t.Errorf("expected no assignment, got %d", len(assignment))
 	}
@@ -97,8 +97,7 @@ func TestGreedyMigrates(t *testing.T) {
 		1: {Type: Idle, Current: "node1", Report: 3},
 		2: {Type: Idle, Current: "node1", Report: 2},
 	}
-	config := Configuration{Node: "node1"}
-	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignGreedy{}.Assign(nodes, state)
 	AssertSingleAssignment(t, assignment, Assignment{1, *state[2], Migration, nodes[1]})
 }
 
@@ -112,8 +111,7 @@ func TestGreedyMigratesEqually(t *testing.T) {
 	for i := 1; i <= 300; i++ {
 		state[uint64(i)] = &VniState{Type: Idle, Current: "node1", Report: 1}
 	}
-	config := Configuration{Node: "node1"}
-	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignGreedy{}.Assign(nodes, state)
 	finalAssignment := map[string]int{}
 	for _, a := range assignment {
 		finalAssignment[a.Next.Name]++
@@ -141,8 +139,7 @@ func TestGreedyIsNotOptimal(t *testing.T) {
 		4: {Type: Idle, Current: "node1", Report: 2},
 		5: {Type: Idle, Current: "node1", Report: 1},
 	}
-	config := Configuration{Node: "node1"}
-	assignment := AssignGreedy{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignGreedy{}.Assign(nodes, state)
 	finalUtilization := map[string]uint64{}
 	for _, a := range assignment {
 		finalUtilization[a.Next.Name] += state[a.Vni].Report
@@ -172,8 +169,7 @@ func TestConsistentHashingAssignsToNextHigher(t *testing.T) {
 	state := map[uint64]*VniState{
 		vni: {Type: Unassigned},
 	}
-	config := Configuration{Node: "node1"}
-	assignment := AssignConsistentHashing{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignConsistentHashing{}.Assign(nodes, state)
 	AssertSingleAssignment(t, assignment, Assignment{1, *state[vni], Failover, nodes[1]})
 }
 
@@ -188,8 +184,7 @@ func TestConsistentHashingWrapsAround(t *testing.T) {
 	state := map[uint64]*VniState{
 		vni: {Type: Unassigned},
 	}
-	config := Configuration{Node: "node1"}
-	assignment := AssignConsistentHashing{}.Assign(&Daemon{Config: config}, nodes, state)
+	assignment := AssignConsistentHashing{}.Assign(nodes, state)
 	AssertSingleAssignment(t, assignment, Assignment{1, *state[vni], Failover, nodes[0]})
 
 }

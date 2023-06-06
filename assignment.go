@@ -20,18 +20,20 @@ type Assignment struct {
 }
 
 type AssignmentStrategy interface {
-	Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment
+	Assign(nodes []Node, state map[uint64]*VniState) []Assignment
 }
 
-type AssignSelf struct{}
+type AssignSelf struct {
+	Config *Configuration
+}
 
-func (_ AssignSelf) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+func (s AssignSelf) Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
 	if len(nodes) == 0 {
 		return nil
 	}
 	var node Node
 	for _, n := range nodes {
-		if n.Name == d.Config.Node {
+		if n.Name == s.Config.Node {
 			node = n
 		}
 	}
@@ -49,19 +51,21 @@ func (_ AssignSelf) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) 
 	return assignments
 }
 
-type AssignOther struct{}
+type AssignOther struct {
+	Config *Configuration
+}
 
-func (_ AssignOther) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+func (s AssignOther) Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
 	if len(nodes) == 0 {
 		return nil
 	}
 	assignments := make([]Assignment, 0)
 	node := nodes[0]
-	if node.Name == d.Config.Node && len(nodes) > 1 {
+	if node.Name == s.Config.Node && len(nodes) > 1 {
 		node = nodes[1]
 	}
 	for vni, vniState := range state {
-		if vniState.Type == Idle && vniState.Current == d.Config.Node && node.Name != d.Config.Node {
+		if vniState.Type == Idle && vniState.Current == s.Config.Node && node.Name != s.Config.Node {
 			assignments = append(assignments, Assignment{vni, *vniState, Migration, node})
 		} else if vniState.Type == Unassigned {
 			assignments = append(assignments, Assignment{vni, *vniState, Failover, node})
@@ -148,7 +152,7 @@ func (m HierarchyMap[K1, K2, V]) Min() K1 {
 
 type AssignGreedy struct{}
 
-func (_ AssignGreedy) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+func (_ AssignGreedy) Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -225,7 +229,7 @@ func murmur64(key uint64) uint64 {
 	return key
 }
 
-func (_ AssignConsistentHashing) Assign(d *Daemon, nodes []Node, state map[uint64]*VniState) []Assignment {
+func (_ AssignConsistentHashing) Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
 	if len(nodes) == 0 {
 		return nil
 	}
