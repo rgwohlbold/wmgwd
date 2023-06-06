@@ -145,8 +145,8 @@ type Node struct {
 	Uids  []uint64
 }
 
-func (db *Database) Nodes() ([]Node, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+func (db *Database) Nodes(ctx context.Context) ([]Node, error) {
+	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
 	defer cancel()
 
 	resp, err := db.client.Get(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithSerializable())
@@ -216,8 +216,8 @@ func stateTypeToString(state VniStateType) string {
 	}
 }
 
-func (db *Database) GetFullState(config Configuration, revision int64) (map[uint64]*VniState, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+func (db *Database) GetFullState(ctx context.Context, config Configuration, revision int64) (map[uint64]*VniState, error) {
+	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
 	defer cancel()
 
 	ops := []v3.OpOption{v3.WithPrefix(), v3.WithSerializable()}
@@ -379,7 +379,7 @@ func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
 	return u
 }
 
-func (u *VniUpdate) RunOnce() error {
+func (u *VniUpdate) RunOnce(ctx context.Context) error {
 	if u.revision == -1 {
 		panic(errors.New("revision not set"))
 	}
@@ -424,7 +424,7 @@ func (u *VniUpdate) RunOnce() error {
 		}
 	}
 	l.Uint64("vni", u.vni).Msg("updating vni")
-	ctx, cancel := context.WithTimeout(context.Background(), EtcdTimeout)
+	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
 	_, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
 	cancel()
 	if err != nil {
@@ -441,11 +441,15 @@ func (u *VniUpdate) RunOnce() error {
 	return nil
 }
 
-func (u *VniUpdate) RunWithRetry() {
+func (u *VniUpdate) RunWithRetry(ctx context.Context) {
 	timeout := EtcdTimeout
 	for {
-		err := u.RunOnce()
+		err := u.RunOnce(ctx)
 		if err == nil {
+			return
+		} else if err == context.Canceled {
+			return
+		} else if err == context.DeadlineExceeded {
 			return
 		}
 		log.Error().Err(err).Msg("failed to update vni, retrying")

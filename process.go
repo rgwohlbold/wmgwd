@@ -49,7 +49,7 @@ func (p DefaultEventProcessor) NewVniUpdate(vni uint64) *VniUpdate {
 	return p.daemon.db.NewVniUpdate(vni)
 }
 
-func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
+func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event VniEvent) error {
 	state := event.State.Type
 	current := event.State.Current
 	next := event.State.Next
@@ -60,18 +60,18 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 	// Failure detection and assignment
 	if isLeader {
 		if state == Unassigned {
-			err := p.PeriodicAssignmentSync()
+			err := p.PeriodicAssignmentSync(ctx)
 			if err != nil {
 				return errors.Wrap(err, "could not assign unassigned vni")
 			}
 		} else {
 			// All states except Unassigned and Idle need "Next"
 			if next == "" && state != Idle {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
+				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry(ctx)
 			}
 			// All states except Unassigned, FailoverDecided need "Current"
 			if current == "" && state != Unassigned && state != FailoverDecided {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
+				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry(ctx)
 			}
 		}
 	}
@@ -87,41 +87,41 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 			return errors.Wrap(err, "could not advertise ospf")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry(ctx)
 	} else if state == MigrationOspfAdvertised && isCurrent {
 		err := p.daemon.networkStrategy.WithdrawOspf(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw ospf")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).RunWithRetry(ctx)
 	} else if state == MigrationOspfWithdrawn && isNext {
 		err := p.daemon.networkStrategy.EnableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not enable arp")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).RunWithRetry(ctx)
 	} else if state == MigrationArpEnabled && isCurrent {
 		err := p.daemon.networkStrategy.DisableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not disable arp")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).RunWithRetry(ctx)
 	} else if state == MigrationArpDisabled && isNext {
 		err := p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry(ctx)
 	} else if state == MigrationGratuitousArpSent && isCurrent {
 		err := p.daemon.networkStrategy.WithdrawEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw evpn")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).RunWithRetry(ctx)
 	} else if state == MigrationEvpnWithdrawn && isNext {
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry(ctx)
 	} else if state == FailoverDecided && isNext {
 		err := p.daemon.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
@@ -141,27 +141,27 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 			return errors.Wrap(err, "could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry(ctx)
 	}
 	return nil
 }
 
-func (p DefaultEventProcessor) ProcessVniEventAsync(event VniEvent) {
+func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
 	go func() {
-		err := p.ProcessVniEventSync(event)
+		err := p.ProcessVniEventSync(ctx, event)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to process vni event")
 		}
 	}()
 }
 
-func (p DefaultEventProcessor) PeriodicAssignmentSync() error {
-	state, err := p.daemon.db.GetFullState(p.daemon.Config, -1)
+func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) error {
+	state, err := p.daemon.db.GetFullState(ctx, p.daemon.Config, -1)
 	if err != nil {
 		p.daemon.log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
 		return errors.Wrap(err, "could not get state")
 	}
-	nodes, err := p.daemon.db.Nodes()
+	nodes, err := p.daemon.db.Nodes(ctx)
 	if err != nil {
 		return errors.Wrap(err, "could not get nodes")
 	}
@@ -179,7 +179,7 @@ func (p DefaultEventProcessor) PeriodicAssignmentSync() error {
 				Type(stateType).
 				Current(a.State.Current, NodeLease).
 				Next(a.Next.Name, VniLease{AttachedLeaseType, a.Next.Lease}).
-				RunOnce()
+				RunOnce(ctx)
 			if err != nil {
 				p.daemon.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
 			}
@@ -188,11 +188,30 @@ func (p DefaultEventProcessor) PeriodicAssignmentSync() error {
 	return nil
 }
 
-func (p DefaultEventProcessor) PeriodicAssignmentAsync() {
+func (p DefaultEventProcessor) PeriodicAssignmentAsync(ctx context.Context) {
 	go func() {
-		err := p.PeriodicAssignmentSync()
+		err := p.PeriodicAssignmentSync(ctx)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
+		}
+	}()
+}
+
+func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {
+	go func() {
+		var states map[uint64]*VniState
+		reliably(ctx, p.daemon.log, func() error {
+			var err error
+			states, err = p.daemon.db.GetFullState(ctx, p.daemon.Config, -1)
+			return err
+		})
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		for vni, state := range states {
+			p.ProcessVniEventAsync(ctx, VniEvent{Vni: vni, State: *state})
 		}
 	}()
 }
@@ -209,23 +228,17 @@ func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEven
 			return nil
 		case <-time.After(p.daemon.Config.ScanInterval):
 			if p.leader.Node == p.daemon.Config.Node {
-				p.PeriodicAssignmentAsync()
+				p.PeriodicAssignmentAsync(ctx)
 			}
 		case newNodeEvent := <-newNodeChan:
 			if p.leader.Node == p.daemon.Config.Node && newNodeEvent.Node.Name != p.daemon.Config.Node {
-				p.PeriodicAssignmentAsync()
+				p.PeriodicAssignmentAsync(ctx)
 			}
 		case event := <-vniChan:
-			p.ProcessVniEventAsync(event)
+			p.ProcessVniEventAsync(ctx, event)
 		case newLeaderState := <-leaderChan:
 			*p.leader = newLeaderState
-			states, err := p.daemon.db.GetFullState(p.daemon.Config, -1)
-			if err != nil {
-				p.daemon.log.Fatal().Err(err).Msg("event-processor: failed to get full state")
-			}
-			for vni, state := range states {
-				p.ProcessVniEventAsync(VniEvent{Vni: vni, State: *state})
-			}
+			p.ProcessAllVnisAsync(ctx)
 		}
 	}
 }

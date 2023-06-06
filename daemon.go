@@ -109,7 +109,7 @@ func (d *Daemon) InitPeriodicArp(ctx context.Context) {
 				continue
 			case <-time.After(PeriodicArpInterval):
 				if enabled {
-					state, err := d.db.GetFullState(d.Config, -1)
+					state, err := d.db.GetFullState(ctx, d.Config, -1)
 					if err != nil {
 						d.log.Error().Err(err).Msg("periodic arp: failed to get full state")
 						continue
@@ -158,8 +158,8 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 			}
 		}
 		d.StartPeriodicArp()
-		vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-		nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+		vniChanChan <- d.db.client.Watch(ctx, EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+		nodeChanChan <- d.db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		err = d.db.Register(d.Config.Node, d.uids)
 		if err != nil {
 			d.log.Error().Err(err).Msg("failed to register node")
@@ -209,7 +209,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 						d.log.Error().Err(err).Msg("failed to unregister node, Exit")
 						statusUpdateChan <- Exit
 					}
-					nodes, err := d.db.Nodes()
+					nodes, err := d.db.Nodes(ctx)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to get nodes, Exit")
 						statusUpdateChan <- Exit
@@ -239,7 +239,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					cancel = newCancel
 					statusUpdateChan <- DatabaseConnected
 				} else if status == Drain {
-					dbState, err := d.db.GetFullState(d.Config, -1)
+					dbState, err := d.db.GetFullState(ctx, d.Config, -1)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to get full state, exiting")
 						statusUpdateChan <- Exit
@@ -301,7 +301,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	if d.Config.Report {
 		wg.Add(1)
 		go func() {
-			NewReporter().Start(ctx, d)
+			NewReporter(d).Start(ctx)
 			wg.Done()
 		}()
 	}
