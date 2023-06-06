@@ -442,21 +442,18 @@ func (u *VniUpdate) RunOnce() error {
 }
 
 func (u *VniUpdate) RunWithRetry() {
-	go func() {
-		timeout := EtcdTimeout
-		for {
-			err := u.RunOnce()
-			if err == nil {
-				return
-			}
-			log.Error().Err(err).Msg("failed to update vni, retrying")
-			jitter := time.Duration(rand.Intn(int(2*EtcdJitter)) - int(EtcdJitter))
-			timeout = 2*timeout + jitter
-			if timeout > EtcdMaxTimeout {
-				timeout = EtcdMaxTimeout
-			}
-			time.Sleep(timeout)
+	timeout := EtcdTimeout
+	for {
+		err := u.RunOnce()
+		if err == nil {
+			return
 		}
-	}()
-
+		log.Error().Err(err).Msg("failed to update vni, retrying")
+		jitter := time.Duration(rand.Intn(int(2*EtcdJitter)) - int(EtcdJitter))
+		timeout = 2*timeout + jitter
+		if timeout > EtcdMaxTimeout {
+			timeout = EtcdMaxTimeout
+		}
+		time.Sleep(timeout)
+	}
 }

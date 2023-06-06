@@ -30,7 +30,6 @@ type Daemon struct {
 	assignmentStrategy   AssignmentStrategy
 	networkStrategy      NetworkStrategy
 	vniEventIngestor     VniEventIngestor
-	timerEventIngestor   TimerEventIngestor
 	newNodeEventIngestor NewNodeEventIngestor
 	leaderEventIngestor  LeaderEventIngestor
 	eventProcessor       EventProcessor
@@ -62,7 +61,6 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		assignmentStrategy:   as,
 		networkStrategy:      ns,
 		vniEventIngestor:     VniEventIngestor{},
-		timerEventIngestor:   NewTimerEventIngestor(),
 		newNodeEventIngestor: NewNodeEventIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
 		eventProcessor:       NewDefaultEventProcessor(),
@@ -284,17 +282,15 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	leaderChan := make(chan LeaderState, 1)
 	vniChan := make(chan VniEvent, 1)
 	newNodeChan := make(chan NewNodeEvent, 1)
-	timerChan := make(chan TimerEvent, 1)
 
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d, d.vniEventIngestor, vniChan, wg)
-	runEventIngestor[TimerEvent](ctx, d, d.timerEventIngestor, timerChan, wg)
 	runEventIngestor[NewNodeEvent](ctx, d, d.newNodeEventIngestor, newNodeChan, wg)
 	runEventIngestor[LeaderState](ctx, d, d.leaderEventIngestor, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {
-		err := d.eventProcessor.Process(ctx, d, vniChan, leaderChan, newNodeChan, timerChan)
+		err := d.eventProcessor.Process(ctx, d, vniChan, leaderChan, newNodeChan)
 		if err != nil {
 			d.log.Fatal().Err(err).Msg("failed to process events")
 		}
