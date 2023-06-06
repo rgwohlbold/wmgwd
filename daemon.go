@@ -157,6 +157,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				break
 			}
 		}
+		d.db.pool.Start(ctx)
 		d.StartPeriodicArp()
 		vniChanChan <- d.db.client.Watch(ctx, EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		nodeChanChan <- d.db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())

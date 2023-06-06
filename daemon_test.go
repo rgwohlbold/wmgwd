@@ -371,6 +371,7 @@ func TestDrainOnShutdown(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	cmd := exec.Command("/home/richard/progs/etcd/bin/etcd")
 	err := cmd.Start()

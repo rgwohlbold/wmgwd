@@ -7,10 +7,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3 "go.etcd.io/etcd/client/v3"
-	"math/rand"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -18,6 +16,8 @@ const EtcdTimeout = 5 * time.Second
 const EtcdMaxTimeout = 5 * time.Minute
 const EtcdJitter = 50 * time.Millisecond
 const EtcdLeaseTTL = 5
+
+const NumVniUpdateWorkers = 1
 
 const EtcdVniPrefix = "/wmgwd/vni"
 
@@ -30,41 +30,10 @@ const EtcdNodePrefix = "/wmgwd/node/"
 const EtcdLeaderPrefix = "/wmgwd/leader/"
 
 type Database struct {
-	client                *v3.Client
-	node                  string
-	lease                 v3.LeaseID
-	updatesInProgressLock sync.Mutex
-	updatesInProgress     map[uint64]int64
-}
-
-type VniLease struct {
-	Type  VniLeaseType
-	Lease v3.LeaseID
-}
-
-var NodeLease = VniLease{Type: NodeLeaseType}
-var NoLease = VniLease{Type: NoLeaseType}
-
-type VniLeaseType int
-
-const (
-	NodeLeaseType VniLeaseType = iota
-	AttachedLeaseType
-	NoLeaseType
-)
-
-type VniUpdatePart struct {
-	Key   string
-	Value string
-	Lease VniLease
-}
-
-type VniUpdate struct {
-	vni        uint64
-	db         *Database
-	parts      []VniUpdatePart
-	conditions []v3.Cmp
-	revision   int64
+	client *v3.Client
+	node   string
+	lease  v3.LeaseID
+	pool   *VniUpdateWorkerPool
 }
 
 type VniStateType int
@@ -103,7 +72,7 @@ func NewDatabase(config Configuration) (*Database, error) {
 		return nil, err
 	}
 
-	return &Database{client: client, node: config.Node, updatesInProgress: map[uint64]int64{}}, nil
+	return &Database{client: client, node: config.Node, pool: NewVniUpdateWorkerPool(NumVniUpdateWorkers)}, nil
 }
 
 func (db *Database) CreateLeaseAndKeepalive(ctx context.Context) (<-chan *v3.LeaseKeepAliveResponse, context.CancelFunc, error) {
@@ -318,146 +287,4 @@ func (db *Database) VniFromKv(kv *mvccpb.KeyValue) (uint64, error) {
 
 func (db *Database) NewVniUpdate(vni uint64) *VniUpdate {
 	return &VniUpdate{db: db, vni: vni, revision: -1}
-}
-
-func (u *VniUpdate) leaseTypeToOption(lease VniLease) []v3.OpOption {
-	if lease == NodeLease {
-		return []v3.OpOption{v3.WithLease(u.db.lease)}
-	} else if lease == NoLease {
-		return []v3.OpOption{}
-	} else if lease.Type == AttachedLeaseType {
-		return []v3.OpOption{v3.WithLease(lease.Lease)}
-	}
-	log.Fatal().Msg("invalid lease type")
-	return nil
-}
-
-func (u *VniUpdate) Type(stateType VniStateType) *VniUpdate {
-	u.parts = append(u.parts, VniUpdatePart{
-		Key:   EtcdVniTypeSuffix,
-		Value: strconv.Itoa(int(stateType)),
-		Lease: NodeLease,
-	})
-	return u
-}
-
-func (u *VniUpdate) Current(current string, leaseType VniLease) *VniUpdate {
-	u.parts = append(u.parts, VniUpdatePart{
-		Key:   EtcdVniCurrentSuffix,
-		Value: current,
-		Lease: leaseType,
-	})
-	return u
-}
-
-func (u *VniUpdate) Next(next string, lease VniLease) *VniUpdate {
-	u.parts = append(u.parts, VniUpdatePart{
-		Key:   EtcdVniNextSuffix,
-		Value: next,
-		Lease: lease,
-	})
-	return u
-}
-
-func (u *VniUpdate) Report(report uint64) *VniUpdate {
-	u.parts = append(u.parts, VniUpdatePart{
-		Key:   EtcdVniReportSuffix,
-		Value: strconv.FormatUint(report, 10),
-		Lease: NodeLease,
-	})
-	return u
-}
-
-func (u *VniUpdate) Revision(revision int64) *VniUpdate {
-	u.conditions = append(u.conditions, v3.Compare(v3.ModRevision(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+EtcdVniTypeSuffix), "<", revision+1))
-	u.revision = revision
-	return u
-}
-
-func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
-	u.conditions = append(u.conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
-	return u
-}
-
-func (u *VniUpdate) RunOnce(ctx context.Context) error {
-	if u.revision == -1 {
-		panic(errors.New("revision not set"))
-	}
-	u.db.updatesInProgressLock.Lock()
-	if u.db.updatesInProgress[u.vni] >= u.revision {
-		u.db.updatesInProgressLock.Unlock()
-		return nil
-	}
-	u.db.updatesInProgress[u.vni] = u.revision
-	u.db.updatesInProgressLock.Unlock()
-
-	ops := make([]v3.Op, 0)
-	hasType := false
-	l := log.Debug()
-	for _, part := range u.parts {
-		if part.Key == EtcdVniTypeSuffix {
-			hasType = true
-			break
-		}
-	}
-	if hasType {
-		l = log.Info()
-	}
-	for _, part := range u.parts {
-		leaseOption := u.leaseTypeToOption(part.Lease)
-		ops = append(ops, v3.OpPut(EtcdVniPrefix+"/"+strconv.FormatUint(u.vni, 10)+"/"+part.Key, part.Value, leaseOption...))
-
-		if part.Key == EtcdVniTypeSuffix {
-			parsedInt, err := strconv.Atoi(part.Value)
-			if err == nil {
-				l = l.Str("type", stateTypeToString(VniStateType(parsedInt)))
-			}
-		} else if part.Key == EtcdVniCurrentSuffix {
-			l = l.Str("current", part.Value)
-		} else if part.Key == EtcdVniNextSuffix {
-			l = l.Str("next", part.Value)
-		} else if part.Key == EtcdVniReportSuffix {
-			parsedUint, err := strconv.ParseUint(part.Value, 10, 64)
-			if err == nil {
-				l = l.Uint64("report", parsedUint)
-			}
-		}
-	}
-	l.Uint64("vni", u.vni).Msg("updating vni")
-	ctx, cancel := context.WithTimeout(ctx, EtcdTimeout)
-	_, err := u.db.client.Txn(ctx).If(u.conditions...).Then(ops...).Commit()
-	cancel()
-	if err != nil {
-		log.Error().Err(err).Msg("failed to update vni: transaction failed")
-	}
-	u.db.updatesInProgressLock.Lock()
-	if u.db.updatesInProgress[u.vni] == u.revision {
-		delete(u.db.updatesInProgress, u.vni)
-	}
-	u.db.updatesInProgressLock.Unlock()
-	//if !resp.Succeeded {
-	//	log.Warn().Msg("failed to update vni: transaction failed")
-	//}
-	return nil
-}
-
-func (u *VniUpdate) RunWithRetry(ctx context.Context) {
-	timeout := EtcdTimeout
-	for {
-		err := u.RunOnce(ctx)
-		if err == nil {
-			return
-		} else if err == context.Canceled {
-			return
-		} else if err == context.DeadlineExceeded {
-			return
-		}
-		log.Error().Err(err).Msg("failed to update vni, retrying")
-		jitter := time.Duration(rand.Intn(int(2*EtcdJitter)) - int(EtcdJitter))
-		timeout = 2*timeout + jitter
-		if timeout > EtcdMaxTimeout {
-			timeout = EtcdMaxTimeout
-		}
-		time.Sleep(timeout)
-	}
 }

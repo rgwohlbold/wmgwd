@@ -67,11 +67,11 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 		} else {
 			// All states except Unassigned and Idle need "Next"
 			if next == "" && state != Idle {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry(ctx)
+				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 			}
 			// All states except Unassigned, FailoverDecided need "Current"
 			if current == "" && state != Unassigned && state != FailoverDecided {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry(ctx)
+				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 			}
 		}
 	}
@@ -87,41 +87,41 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 			return errors.Wrap(err, "could not advertise ospf")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry()
 	} else if state == MigrationOspfAdvertised && isCurrent {
 		err := p.daemon.networkStrategy.WithdrawOspf(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw ospf")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfWithdrawn).RunWithRetry()
 	} else if state == MigrationOspfWithdrawn && isNext {
 		err := p.daemon.networkStrategy.EnableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not enable arp")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpEnabled).RunWithRetry()
 	} else if state == MigrationArpEnabled && isCurrent {
 		err := p.daemon.networkStrategy.DisableArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not disable arp")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationArpDisabled).RunWithRetry()
 	} else if state == MigrationArpDisabled && isNext {
 		err := p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry()
 	} else if state == MigrationGratuitousArpSent && isCurrent {
 		err := p.daemon.networkStrategy.WithdrawEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw evpn")
 		}
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationEvpnWithdrawn).RunWithRetry()
 	} else if state == MigrationEvpnWithdrawn && isNext {
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 	} else if state == FailoverDecided && isNext {
 		err := p.daemon.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
@@ -141,7 +141,7 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 			return errors.Wrap(err, "could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry(ctx)
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 	}
 	return nil
 }
