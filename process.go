@@ -15,9 +15,7 @@ type EventProcessor interface {
 }
 
 type DefaultEventProcessor struct {
-	leader         *LeaderState
-	vniEvents      *[]VniEvent
-	vniEventsReady chan struct{}
+	leader *LeaderState
 }
 
 type Verdict int
@@ -39,11 +37,8 @@ func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
 }
 
 func NewDefaultEventProcessor() *DefaultEventProcessor {
-	vniEvents := make([]VniEvent, 0)
 	return &DefaultEventProcessor{
-		vniEvents:      &vniEvents,
-		vniEventsReady: make(chan struct{}, 1),
-		leader:         &LeaderState{},
+		leader: &LeaderState{},
 	}
 }
 
@@ -211,17 +206,7 @@ func (p DefaultEventProcessor) Process(ctx context.Context, d *Daemon, vniChan c
 				}
 			}
 		case event := <-vniChan:
-			d.log.Debug().Msg("event-processor: received event through channel")
-			*p.vniEvents = append(*p.vniEvents, event)
-			if len(p.vniEventsReady) == 0 {
-				p.vniEventsReady <- struct{}{}
-			}
-		case <-p.vniEventsReady:
-			for _, event := range *p.vniEvents {
-				p.ProcessVniEventAsync(d, event)
-			}
-			newVniEvents := make([]VniEvent, 0)
-			p.vniEvents = &newVniEvents
+			p.ProcessVniEventAsync(d, event)
 		case newLeaderState := <-leaderChan:
 			*p.leader = newLeaderState
 			states, err := d.db.GetFullState(d.Config, -1)
