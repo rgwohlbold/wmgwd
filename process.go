@@ -44,6 +44,7 @@ func NewDefaultEventProcessor() *DefaultEventProcessor {
 	return &DefaultEventProcessor{
 		vniEvents:      &vniEvents,
 		vniEventsReady: make(chan struct{}, 1),
+		leader:         &LeaderState{},
 	}
 }
 
