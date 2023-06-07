@@ -12,7 +12,7 @@ import (
 )
 
 type EventProcessor interface {
-	Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent) error
+	Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error
 }
 
 type DefaultEventProcessor struct {
@@ -59,7 +59,7 @@ func (p DefaultEventProcessor) NewVniUpdate(vni uint64) *VniUpdate {
 	return p.daemon.db.NewVniUpdate(vni)
 }
 
-func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event VniEvent) error {
+func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 	state := event.State.Type
 	current := event.State.Current
 	next := event.State.Next
@@ -67,19 +67,15 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 	isNext := next == p.daemon.Config.Node
 	isLeader := p.leader.Node == p.daemon.Config.Node
 
-	// Failure detection and assignment
+	// Failure detection
 	if isLeader {
-		if state == Unassigned {
-			p.PeriodicAssignmentSync(ctx)
-		} else {
-			// All states except Unassigned and Idle need "Next"
-			if next == "" && state != Idle {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
-			}
-			// All states except Unassigned, FailoverDecided need "Current"
-			if current == "" && state != Unassigned && state != FailoverDecided {
-				p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
-			}
+		// All states except Unassigned and Idle need "Next"
+		if next == "" && state != Idle && state != Unassigned {
+			p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
+		}
+		// All states except Unassigned, FailoverDecided need "Current"
+		if current == "" && state != Unassigned && state != FailoverDecided {
+			p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 		}
 	}
 
@@ -153,9 +149,9 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 	return nil
 }
 
-func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
+func (p DefaultEventProcessor) ProcessVniEventAsync(event VniEvent) {
 	go func() {
-		err := p.ProcessVniEventSync(ctx, event)
+		err := p.ProcessVniEventSync(event)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to process vni event")
 		}
@@ -239,12 +235,12 @@ func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {
 		default:
 		}
 		for vni, state := range states {
-			p.ProcessVniEventAsync(ctx, VniEvent{Vni: vni, State: *state})
+			p.ProcessVniEventAsync(VniEvent{Vni: vni, State: *state})
 		}
 	}()
 }
 
-func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent) error {
+func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
 
@@ -258,24 +254,28 @@ func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEven
 			if p.leader.Node == p.daemon.Config.Node {
 				p.PeriodicAssignmentAsync(ctx)
 			}
+			p.ProcessAllVnisAsync(ctx)
 		case newNodeEvent := <-newNodeChan:
-			if p.leader.Node == p.daemon.Config.Node && newNodeEvent.Node.Name != p.daemon.Config.Node {
+			if p.leader.Node == p.daemon.Config.Node && (newNodeEvent.Type == NodeRemoved || newNodeEvent.Node.Name != p.daemon.Config.Node) {
 				p.PeriodicAssignmentAsync(ctx)
 			}
 		case event := <-vniChan:
-			p.ProcessVniEventAsync(ctx, event)
+			p.ProcessVniEventAsync(event)
 		case newLeaderState := <-leaderChan:
 			*p.leader = newLeaderState
+			if p.leader.Node == p.daemon.Config.Node {
+				p.PeriodicAssignmentAsync(ctx)
+			}
 			p.ProcessAllVnisAsync(ctx)
 		}
 	}
 }
 
-func (p EventProcessorWrapper) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NewNodeEvent) error {
+func (p EventProcessorWrapper) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error {
 	innerCtx, innerCancel := context.WithCancel(context.Background())
 	internalVniChan := make(chan VniEvent, cap(vniChan))
 	internalLeaderChan := make(chan LeaderState, 1)
-	internalNewNodeChan := make(chan NewNodeEvent, 1)
+	internalNewNodeChan := make(chan NodeEvent, 1)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {

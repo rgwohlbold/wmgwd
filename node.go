@@ -8,15 +8,23 @@ import (
 	"strings"
 )
 
-type NewNodeEventIngestor struct {
+type NodeIngestor struct {
 	WatchChanChan <-chan v3.WatchChan
 }
 
-type NewNodeEvent struct {
+type NodeEventType int
+
+const (
+	NodeAdded NodeEventType = iota
+	NodeRemoved
+)
+
+type NodeEvent struct {
+	Type NodeEventType
 	Node Node
 }
 
-func (i NewNodeEventIngestor) Ingest(ctx context.Context, newNodeChan chan<- NewNodeEvent) {
+func (i NodeIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent) {
 	watchChan := <-i.WatchChanChan
 	for {
 		select {
@@ -29,21 +37,28 @@ func (i NewNodeEventIngestor) Ingest(ctx context.Context, newNodeChan chan<- New
 				continue
 			}
 			for _, ev := range e.Events {
-				if ev.Type != v3.EventTypePut {
-					continue
+				if ev.Type == v3.EventTypePut {
+					var uids []uint64
+					err := json.Unmarshal(ev.Kv.Value, &uids)
+					if err != nil {
+						log.Error().Err(err).Msg("node-watcher: failed to unmarshal uids")
+						continue
+					}
+					name := strings.TrimPrefix(string(ev.Kv.Key), EtcdNodePrefix)
+					log.Info().Str("name", string(ev.Kv.Key)).Msg("node-watcher: node added")
+					nodeChan <- NodeEvent{
+						Type: NodeAdded,
+						Node: Node{
+							Name:  name,
+							Lease: v3.LeaseID(ev.Kv.Lease),
+							Uids:  uids,
+						}}
+				} else if ev.Type == v3.EventTypeDelete {
+					log.Info().Str("name", string(ev.Kv.Key)).Msg("node-watcher: node deleted")
+					nodeChan <- NodeEvent{
+						Type: NodeRemoved,
+					}
 				}
-				var uids []uint64
-				err := json.Unmarshal(ev.Kv.Value, &uids)
-				if err != nil {
-					log.Error().Err(err).Msg("node-watcher: failed to unmarshal uids")
-					continue
-				}
-				name := strings.TrimPrefix(string(ev.Kv.Key), EtcdNodePrefix)
-				newNodeChan <- NewNodeEvent{Node: Node{
-					Name:  name,
-					Lease: v3.LeaseID(ev.Kv.Lease),
-					Uids:  uids,
-				}}
 			}
 		}
 	}

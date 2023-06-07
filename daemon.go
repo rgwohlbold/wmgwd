@@ -29,7 +29,7 @@ type Daemon struct {
 	assignmentStrategy   AssignmentStrategy
 	networkStrategy      NetworkStrategy
 	vniEventIngestor     VniEventIngestor
-	newNodeEventIngestor NewNodeEventIngestor
+	newNodeEventIngestor NodeIngestor
 	leaderEventIngestor  LeaderEventIngestor
 	eventProcessor       EventProcessor
 	db                   *Database
@@ -59,7 +59,7 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		Config:               config,
 		assignmentStrategy:   as,
 		networkStrategy:      ns,
-		newNodeEventIngestor: NewNodeEventIngestor{},
+		newNodeEventIngestor: NodeIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
 		uids:                 uids,
 		log:                  log.With().Str("node", config.Node).Logger(),
@@ -283,11 +283,11 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 
 	leaderChan := make(chan LeaderState, 1)
 	vniChan := make(chan VniEvent, 1)
-	newNodeChan := make(chan NewNodeEvent, 1)
+	newNodeChan := make(chan NodeEvent, 1)
 
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
-	runEventIngestor[NewNodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
+	runEventIngestor[NodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
 	runEventIngestor[LeaderState](ctx, d.leaderEventIngestor, leaderChan, wg)
 
 	wg.Add(1)
