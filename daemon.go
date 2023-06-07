@@ -280,7 +280,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 
 	switch d.networkStrategy.(type) {
 	case *SystemNetworkStrategy:
-		go d.networkStrategy.(*SystemNetworkStrategy).Loop(ctx)
+		go d.networkStrategy.(*SystemNetworkStrategy).Loop(context.Background())
 	}
 
 	d.InitPeriodicArp(ctx)

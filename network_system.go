@@ -17,6 +17,7 @@ import (
 type FrrCommandType int
 
 const MaxCommands = 100
+const RouteMapPriorityOffset = 10
 
 const (
 	FrrOspfAdvertise FrrCommandType = iota
@@ -79,13 +80,13 @@ func (s *SystemNetworkStrategy) vtysh(commands []FrrCommand) error {
 				"exit\n")
 			break
 		case FrrEvpnAdvertise:
-			bytes = []byte("route-map filter-vni permit " + strconv.FormatUint(command.Vni, 10) + "\n" +
+			bytes = []byte("route-map filter-vni permit " + strconv.FormatUint(command.Vni+RouteMapPriorityOffset, 10) + "\n" +
 				"match evpn vni " + strconv.FormatUint(command.Vni, 10) + "\n" +
 				"exit\n")
 			clear = true
 			break
 		case FrrEvpnWithdraw:
-			bytes = []byte("no route-map filter-vni permit " + strconv.FormatUint(command.Vni, 10) + "\n")
+			bytes = []byte("no route-map filter-vni permit " + strconv.FormatUint(command.Vni+RouteMapPriorityOffset, 10) + "\n")
 			clear = true
 			break
 		}
@@ -207,7 +208,6 @@ func (s *SystemNetworkStrategy) DisableArp(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
-	log.Debug().Uint64("vni", vni).Msg("sending gratuitous arp")
 	iface, err := net.InterfaceByName(s.bridgeName(vni))
 	if err != nil {
 		return errors.Wrap(err, "could not get interface")

@@ -150,7 +150,6 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 		if err != nil {
 			return errors.Wrap(err, "could not enable arp")
 		}
-		time.Sleep(p.daemon.Config.MigrationTimeout)
 		err = p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
 			log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
