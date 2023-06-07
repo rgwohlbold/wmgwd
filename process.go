@@ -125,7 +125,7 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 	} else if state == MigrationArpDisabled && isNext {
 		err := p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
-			return errors.Wrap(err, "could not send gratuitous arp")
+			log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationGratuitousArpSent).RunWithRetry()
@@ -153,7 +153,7 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 		time.Sleep(p.daemon.Config.MigrationTimeout)
 		err = p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
 		if err != nil {
-			return errors.Wrap(err, "could not send gratuitous arp")
+			log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
