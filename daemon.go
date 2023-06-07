@@ -66,20 +66,32 @@ func NewDaemon(config Configuration, ns NetworkStrategy) *Daemon {
 }
 
 func (d *Daemon) WithdrawAll() error {
+	wg := sync.WaitGroup{}
 	for _, vni := range d.Config.Vnis {
-		err := d.networkStrategy.WithdrawEvpn(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to withdraw evpn")
-		}
-		err = d.networkStrategy.WithdrawOspf(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to withdraw ospf")
-		}
-		err = d.networkStrategy.DisableArp(vni)
-		if err != nil {
-			return errors.Wrap(err, "failed to disable arp")
-		}
+		wg.Add(3)
+		go func(vni uint64) {
+			defer wg.Done()
+			err := d.networkStrategy.WithdrawEvpn(vni)
+			if err != nil {
+				log.Error().Err(err).Uint64("vni", vni).Msg("failed to withdraw evpn")
+			}
+		}(vni)
+		go func(vni uint64) {
+			defer wg.Done()
+			err := d.networkStrategy.WithdrawOspf(vni)
+			if err != nil {
+				log.Error().Err(err).Uint64("vni", vni).Msg("failed to withdraw ospf")
+			}
+		}(vni)
+		go func(vni uint64) {
+			defer wg.Done()
+			err := d.networkStrategy.DisableArp(vni)
+			if err != nil {
+				log.Error().Err(err).Uint64("vni", vni).Msg("failed to disable arp")
+			}
+		}(vni)
 	}
+	wg.Wait()
 	return nil
 }
 
@@ -265,6 +277,11 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 func (d *Daemon) Run(drainCtx context.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	switch d.networkStrategy.(type) {
+	case *SystemNetworkStrategy:
+		go d.networkStrategy.(*SystemNetworkStrategy).Loop(ctx)
+	}
 
 	d.InitPeriodicArp(ctx)
 	var err error

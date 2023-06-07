@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/mdlayher/arp"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -13,13 +14,35 @@ import (
 	"sync"
 )
 
+type FrrCommandType int
+
+const MaxCommands = 100
+
+const (
+	FrrOspfAdvertise FrrCommandType = iota
+	FrrOspfWithdraw
+	FrrEvpnAdvertise
+	FrrEvpnWithdraw
+)
+
+type FrrCommand struct {
+	Type         FrrCommandType
+	Vni          uint64
+	ResponseChan chan error
+}
+
 type SystemNetworkStrategy struct {
-	lock *sync.Mutex
+	vtyshLock        sync.Mutex
+	commandLock      sync.Mutex
+	commands         []FrrCommand
+	updatesAvailable chan struct{}
 }
 
 func NewSystemNetworkStrategy() *SystemNetworkStrategy {
 	return &SystemNetworkStrategy{
-		lock: &sync.Mutex{},
+		vtyshLock:        sync.Mutex{},
+		commandLock:      sync.Mutex{},
+		updatesAvailable: make(chan struct{}, 1),
 	}
 }
 
@@ -27,17 +50,67 @@ func (s *SystemNetworkStrategy) bridgeName(vni uint64) string {
 	return "br" + strconv.FormatUint(vni, 10)
 }
 
-func (s *SystemNetworkStrategy) vtysh(commands []string) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+func (s *SystemNetworkStrategy) vtysh(commands []FrrCommand) error {
+	s.vtyshLock.Lock()
+	defer s.vtyshLock.Unlock()
 
-	input := make([]string, 2*len(commands))
-	for i, c := range commands {
-		input[2*i] = "-c"
-		input[2*i+1] = c
+	cmd := exec.Command("vtysh")
+	stdinPipe, err := cmd.StdinPipe()
+	defer stdinPipe.Close()
+	if err != nil {
+		return errors.Wrap(err, "vtysh failed: stdin pipe open failed")
 	}
-	log.Debug().Strs("input", input).Msg("vtysh")
-	output, err := exec.Command("vtysh", input...).Output()
+	_, err = stdinPipe.Write([]byte("configure terminal\n"))
+	if err != nil {
+		return errors.Wrap(err, "vtysh failed: write to stdin failed")
+	}
+	clear := false
+	for _, command := range commands {
+		var bytes []byte
+		switch command.Type {
+		case FrrOspfAdvertise:
+			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
+				"no ospf cost\n" +
+				"exit\n")
+			break
+		case FrrOspfWithdraw:
+			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
+				"ospf cost 65535\n" +
+				"exit\n")
+			break
+		case FrrEvpnAdvertise:
+			bytes = []byte("route-map filter-vni permit " + strconv.FormatUint(command.Vni, 10) + "\n" +
+				"match evpn vni " + strconv.FormatUint(command.Vni, 10) + "\n" +
+				"exit\n")
+			clear = true
+			break
+		case FrrEvpnWithdraw:
+			bytes = []byte("no route-map filter-vni permit " + strconv.FormatUint(command.Vni, 10) + "\n")
+			clear = true
+			break
+		}
+		_, err = stdinPipe.Write(bytes)
+		if err != nil {
+			return errors.Wrap(err, "vtysh failed: write to stdin failed")
+		}
+	}
+	_, err = stdinPipe.Write([]byte("exit\nwrite memory\n"))
+	if err != nil {
+		return errors.Wrap(err, "vtysh failed: write to stdin failed")
+	}
+	if clear {
+		_, err = stdinPipe.Write([]byte("clear bgp l2vpn evpn * soft\n"))
+		if err != nil {
+			return errors.Wrap(err, "vtysh failed: write to stdin failed")
+		}
+	}
+	_, err = stdinPipe.Write([]byte("exit\n"))
+	err = stdinPipe.Close()
+	if err != nil {
+		return errors.Wrap(err, "vtysh failed: stdin pipe close failed")
+	}
+	log.Debug().Msg("waiting for vtysh output")
+	output, err := cmd.Output()
 	log.Debug().Str("output", string(output)).Msg("vtysh")
 	if err != nil {
 		return errors.Wrap(err, "vtysh failed")
@@ -48,51 +121,75 @@ func (s *SystemNetworkStrategy) vtysh(commands []string) error {
 	return nil
 }
 
+func (s *SystemNetworkStrategy) Loop(ctx context.Context) {
+	for {
+	start:
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.updatesAvailable:
+			for {
+				s.commandLock.Lock()
+				num := len(s.commands)
+				if num > MaxCommands {
+					num = MaxCommands
+				}
+				commands := s.commands[:num]
+				s.commands = s.commands[num:]
+				s.commandLock.Unlock()
+				if num == 0 {
+					goto start
+				}
+				log.Info().Int("commands", len(commands)).Msg("processing commands")
+				err := s.vtysh(commands)
+				for _, command := range commands {
+					command.ResponseChan <- err
+				}
+			}
+		}
+	}
+}
+
+func (s *SystemNetworkStrategy) WaitForCommand(command FrrCommand) error {
+	command.ResponseChan = make(chan error, 1)
+	s.commandLock.Lock()
+	s.commands = append(s.commands, command)
+	if len(s.updatesAvailable) == 0 {
+		s.updatesAvailable <- struct{}{}
+	}
+	s.commandLock.Unlock()
+	return <-command.ResponseChan
+}
+
 func (s *SystemNetworkStrategy) AdvertiseEvpn(vni uint64) error {
 	log.Debug().Uint64("vni", vni).Msg("advertising evpn")
-	return s.vtysh([]string{
-		"configure terminal",
-		"route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
-		"match evpn vni " + strconv.FormatUint(vni, 10),
-		"exit", // route-map
-		"exit", // configure terminal
-		"write memory",
-		"clear bgp l2vpn evpn * soft",
+	return s.WaitForCommand(FrrCommand{
+		Type: FrrEvpnAdvertise,
+		Vni:  vni,
 	})
 }
 
 func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 	log.Debug().Uint64("vni", vni).Msg("withdrawing evpn")
-	return s.vtysh([]string{
-		"configure terminal",
-		"no route-map filter-vni permit " + strconv.FormatUint(vni, 10), // vni as priority in route-map
-		"exit", // configure terminal
-		"write memory",
-		"clear bgp l2vpn evpn * soft",
+	return s.WaitForCommand(FrrCommand{
+		Type: FrrEvpnWithdraw,
+		Vni:  vni,
 	})
 }
 
 func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
-	log.Debug().Msg("advertising ospf")
-	return s.vtysh([]string{
-		"configure terminal",
-		"interface " + s.bridgeName(vni),
-		"no ospf cost",
-		"exit", // interface,
-		"exit", // configure terminal
-		"write memory",
+	log.Debug().Uint64("vni", vni).Msg("advertising ospf")
+	return s.WaitForCommand(FrrCommand{
+		Type: FrrOspfAdvertise,
+		Vni:  vni,
 	})
 }
 
 func (s *SystemNetworkStrategy) WithdrawOspf(vni uint64) error {
-	log.Debug().Msg("withdrawing ospf")
-	return s.vtysh([]string{
-		"configure terminal",
-		"interface " + s.bridgeName(vni),
-		"ospf cost 65535",
-		"exit", // interface,
-		"exit", // configure terminal
-		"write memory",
+	log.Debug().Uint64("vni", vni).Msg("withdrawing ospf")
+	return s.WaitForCommand(FrrCommand{
+		Type: FrrOspfWithdraw,
+		Vni:  vni,
 	})
 }
 
@@ -146,12 +243,4 @@ func (s *SystemNetworkStrategy) SendGratuitousArp(vni uint64) error {
 		}
 	}
 	return nil
-}
-
-func (s *SystemNetworkStrategy) ByteCounter(vni uint64) (uint64, error) {
-	res, err := os.ReadFile("/sys/class/net/" + s.bridgeName(vni) + "/statistics/tx_bytes")
-	if err != nil {
-		return 0, errors.Wrap(err, "could not read tx_bytes")
-	}
-	return strconv.ParseUint(strings.TrimSpace(string(res)), 10, 64)
 }

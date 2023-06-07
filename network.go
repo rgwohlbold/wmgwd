@@ -8,5 +8,4 @@ type NetworkStrategy interface {
 	EnableArp(vni uint64) error
 	DisableArp(vni uint64) error
 	SendGratuitousArp(vni uint64) error
-	ByteCounter(vni uint64) (uint64, error)
 }

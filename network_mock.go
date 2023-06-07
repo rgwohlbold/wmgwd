@@ -70,10 +70,3 @@ func (s MockNetworkStrategy) SendGratuitousArp(vni uint64) error {
 	s.gratuitousArp[vni] += 1
 	return nil
 }
-
-func (s MockNetworkStrategy) ByteCounter(_ uint64) (uint64, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	*s.lastBytes += 1
-	return *s.lastBytes, nil
-}
