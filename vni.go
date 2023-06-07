@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"github.com/emirpasic/gods/sets/treeset"
+	"github.com/emirpasic/gods/utils"
 	v3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -44,7 +46,7 @@ func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent) {
 				watchChan = <-i.WatchChanChan
 				continue
 			}
-			vni := InvalidVni
+			vnis := treeset.NewWith(utils.UInt64Comparator)
 			revision := e.Header.Revision
 			for _, ev := range e.Events {
 				parsedVni, err := d.db.VniFromKv(ev.Kv)
@@ -52,26 +54,24 @@ func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent) {
 					d.log.Error().Err(err).Msg("vni-watcher: failed to parse vni")
 					continue
 				}
-				if vni != InvalidVni && parsedVni != vni {
-					d.log.Error().Uint64("vni", vni).Uint64("parsed-vni", parsedVni).Msg("vni-watcher: got state for multiple vnis")
-					continue
-				}
-				vni = parsedVni
+				vnis.Add(parsedVni)
 			}
-			if vni == InvalidVni {
+			if vnis.Size() == 0 {
 				d.log.Error().Msg("vni-watcher: got event for no vnis")
 				continue
 			}
-
-			state, err := d.db.GetState(vni, revision)
-			if err != nil {
-				d.log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
-				continue
+			for _, vni := range vnis.Values() {
+				vni := vni.(uint64)
+				state, err := d.db.GetState(vni, revision) // TODO: this may block for a long time
+				if err != nil {
+					d.log.Error().Err(err).Msg("vni-watcher: failed to parse vni state")
+					continue
+				}
+				if len(ch) == cap(ch) {
+					d.log.Warn().Uint64("vni", vni).Msg("vni-watcher: channel full")
+				}
+				ch <- VniEvent{Vni: vni, State: state}
 			}
-			if len(ch) == cap(ch) {
-				d.log.Warn().Uint64("vni", vni).Msg("vni-watcher: channel full")
-			}
-			ch <- VniEvent{Vni: vni, State: state}
 		}
 	}
 }
