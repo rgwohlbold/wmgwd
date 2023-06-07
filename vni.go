@@ -24,18 +24,16 @@ type VniEventIngestor struct {
 	Daemon        *Daemon
 }
 
-const InvalidVni = ^uint64(0)
-
-func NewVniEventIngestor(d *Daemon, watchChanChan <-chan v3.WatchChan) VniEventIngestor {
+func NewVniEventIngestor(d *Daemon) VniEventIngestor {
 	return VniEventIngestor{
-		WatchChanChan: watchChanChan,
-		Daemon:        d,
+		Daemon: d,
 	}
 }
 
-func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent) {
+func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent, setupChan chan<- struct{}) {
 	d := i.Daemon
-	watchChan := <-i.WatchChanChan
+	watchChan := d.db.client.Watch(ctx, EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+	setupChan <- struct{}{}
 	for {
 		select {
 		case <-ctx.Done():

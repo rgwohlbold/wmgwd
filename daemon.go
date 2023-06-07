@@ -25,27 +25,29 @@ type Configuration struct {
 }
 
 type Daemon struct {
-	Config               Configuration
-	networkStrategy      NetworkStrategy
-	vniEventIngestor     VniEventIngestor
-	newNodeEventIngestor NodeIngestor
-	eventProcessor       EventProcessor
-	db                   *Database
-	periodicArpChan      chan bool
-	uids                 []uint64
-	log                  zerolog.Logger
+	Config            Configuration
+	networkStrategy   NetworkStrategy
+	vniEventIngestor  VniEventIngestor
+	nodeEventIngestor NodeEventIngestor
+	eventProcessor    EventProcessor
+	db                *Database
+	periodicArpChan   chan bool
+	uids              []uint64
+	log               zerolog.Logger
 }
 
 type EventIngestor[E any] interface {
-	Ingest(ctx context.Context, eventChan chan<- E)
+	Ingest(ctx context.Context, eventChan chan<- E, setupChan chan<- struct{})
 }
 
 func runEventIngestor[E any](ctx context.Context, ingestor EventIngestor[E], eventChan chan<- E, wg *sync.WaitGroup) {
 	wg.Add(1)
+	setupChan := make(chan struct{})
 	go func() {
-		ingestor.Ingest(ctx, eventChan)
+		ingestor.Ingest(ctx, eventChan, setupChan)
 		wg.Done()
 	}()
+	<-setupChan
 }
 
 func NewDaemon(config Configuration, ns NetworkStrategy) *Daemon {
@@ -54,14 +56,14 @@ func NewDaemon(config Configuration, ns NetworkStrategy) *Daemon {
 		uids[i] = rand.Uint64()
 	}
 	daemon := &Daemon{
-		Config:               config,
-		networkStrategy:      ns,
-		newNodeEventIngestor: NodeIngestor{},
-		uids:                 uids,
-		log:                  log.With().Str("node", config.Node).Logger(),
+		Config:          config,
+		networkStrategy: ns,
+		uids:            uids,
+		log:             log.With().Str("node", config.Node).Logger(),
 	}
 	daemon.eventProcessor = NewDefaultEventProcessor(daemon)
-	daemon.vniEventIngestor = NewVniEventIngestor(daemon, nil) // will be set later when NewDatabase is called
+	daemon.vniEventIngestor = NewVniEventIngestor(daemon)
+	daemon.nodeEventIngestor = NewNodeEventIngestor(daemon)
 	return daemon
 }
 
@@ -144,13 +146,11 @@ const (
 	Exit
 )
 
-func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelFunc, drainCtx context.Context) (<-chan v3.WatchChan, <-chan v3.WatchChan, error) {
-	vniChanChan := make(chan v3.WatchChan, 1)
-	nodeChanChan := make(chan v3.WatchChan, 1)
+func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelFunc, drainCtx context.Context) error {
 	var err error
 	d.db, err = NewDatabase(d.Config)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to create database")
+		return errors.Wrap(err, "failed to create database")
 	}
 
 	var wg sync.WaitGroup
@@ -166,8 +166,6 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		}
 		d.db.pool.Start(ctx)
 		d.StartPeriodicArp()
-		vniChanChan <- d.db.client.Watch(ctx, EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-		nodeChanChan <- d.db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 		err = d.db.Register(d.Config.Node, d.uids)
 		if err != nil {
 			d.log.Error().Err(err).Msg("failed to register node")
@@ -194,8 +192,6 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				switch status {
 				case DatabaseConnected:
 					d.StartPeriodicArp()
-					vniChanChan <- d.db.client.Watch(context.Background(), EtcdVniPrefix, v3.WithPrefix(), v3.WithCreatedNotify())
-					nodeChanChan <- d.db.client.Watch(context.Background(), EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
 					err = d.db.Register(d.Config.Node, d.uids)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
@@ -241,7 +237,27 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					statusUpdateChan <- DatabaseDisconnected
 				}
 			case <-ticker.C:
-				if status == DatabaseDisconnected {
+				if status == DatabaseConnected {
+					var nodes []Node
+					nodes, err = d.db.Nodes(ctx)
+					if err != nil {
+						d.log.Error().Err(err).Msg("failed to get nodes")
+						continue
+					}
+					found := false
+					for _, node := range nodes {
+						if node.Name == d.Config.Node {
+							found = true
+							break
+						}
+					}
+					if !found {
+						err = d.db.Register(d.Config.Node, d.uids)
+						if err != nil {
+							d.log.Error().Err(err).Msg("failed to register node")
+						}
+					}
+				} else if status == DatabaseDisconnected {
 					newRespChan, newCancel, err := d.db.CreateLeaseAndKeepalive(ctx)
 					if err != nil {
 						continue
@@ -271,7 +287,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		}
 	}()
 	wg.Wait()
-	return vniChanChan, nodeChanChan, nil
+	return nil
 }
 
 func (d *Daemon) Run(drainCtx context.Context) error {
@@ -286,7 +302,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	d.InitPeriodicArp(ctx)
 	var err error
 
-	d.vniEventIngestor.WatchChanChan, d.newNodeEventIngestor.WatchChanChan, err = d.SetupDatabase(ctx, cancel, drainCtx)
+	err = d.SetupDatabase(ctx, cancel, drainCtx)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup database")
 	}
@@ -301,7 +317,7 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
-	runEventIngestor[NodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
+	runEventIngestor[NodeEvent](ctx, d.nodeEventIngestor, newNodeChan, wg)
 
 	wg.Add(1)
 	go func() {

@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-type NodeIngestor struct {
-	WatchChanChan <-chan v3.WatchChan
+type NodeEventIngestor struct {
+	Daemon *Daemon
 }
 
 type NodeEventType int
@@ -24,8 +24,16 @@ type NodeEvent struct {
 	Node Node
 }
 
-func (i NodeIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent) {
-	watchChan := <-i.WatchChanChan
+func NewNodeEventIngestor(d *Daemon) NodeEventIngestor {
+	return NodeEventIngestor{
+		Daemon: d,
+	}
+}
+
+func (i NodeEventIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent, setupChan chan<- struct{}) {
+	d := i.Daemon
+	watchChan := d.db.client.Watch(ctx, EtcdNodePrefix, v3.WithPrefix(), v3.WithCreatedNotify())
+	setupChan <- struct{}{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -33,7 +41,6 @@ func (i NodeIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent) {
 			return
 		case e, ok := <-watchChan:
 			if !ok {
-				watchChan = <-i.WatchChanChan
 				continue
 			}
 			for _, ev := range e.Events {
