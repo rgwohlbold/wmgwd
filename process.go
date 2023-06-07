@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
 	"sync"
@@ -17,6 +18,10 @@ type EventProcessor interface {
 type DefaultEventProcessor struct {
 	daemon *Daemon
 	leader *LeaderState
+
+	isAssigning *bool
+	willAssign  *bool
+	assignMutex *sync.Mutex
 }
 
 type Verdict int
@@ -39,9 +44,14 @@ func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
 }
 
 func NewDefaultEventProcessor(daemon *Daemon) *DefaultEventProcessor {
+	isAssigning := false
+	willAssign := false
 	return &DefaultEventProcessor{
-		leader: &LeaderState{},
-		daemon: daemon,
+		leader:      &LeaderState{},
+		daemon:      daemon,
+		isAssigning: &isAssigning,
+		willAssign:  &willAssign,
+		assignMutex: &sync.Mutex{},
 	}
 }
 
@@ -60,10 +70,7 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 	// Failure detection and assignment
 	if isLeader {
 		if state == Unassigned {
-			err := p.PeriodicAssignmentSync(ctx)
-			if err != nil {
-				return errors.Wrap(err, "could not assign unassigned vni")
-			}
+			p.PeriodicAssignmentSync(ctx)
 		} else {
 			// All states except Unassigned and Idle need "Next"
 			if next == "" && state != Idle {
@@ -155,7 +162,7 @@ func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event V
 	}()
 }
 
-func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) error {
+func (p DefaultEventProcessor) periodicAssignmentInternal(ctx context.Context) error {
 	state, err := p.daemon.db.GetFullState(ctx, p.daemon.Config, -1)
 	if err != nil {
 		p.daemon.log.Error().Err(err).Msg("event-processor: failed to get state on periodic assignment")
@@ -173,13 +180,12 @@ func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) error
 		}
 		a := assignment
 		go func() {
-			err := p.NewVniUpdate(a.Vni).
+			err := p.daemon.db.pool.RunOnce(p.NewVniUpdate(a.Vni).
 				LeaderState(*p.leader).
 				Revision(a.State.Revision).
 				Type(stateType).
 				Current(a.State.Current, NodeLease).
-				Next(a.Next.Name, VniLease{AttachedLeaseType, a.Next.Lease}).
-				RunOnce(ctx)
+				Next(a.Next.Name, VniLease{AttachedLeaseType, a.Next.Lease}))
 			if err != nil {
 				p.daemon.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
 			}
@@ -188,13 +194,35 @@ func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) error
 	return nil
 }
 
-func (p DefaultEventProcessor) PeriodicAssignmentAsync(ctx context.Context) {
-	go func() {
-		err := p.PeriodicAssignmentSync(ctx)
+func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) {
+	p.assignMutex.Lock()
+	if *p.isAssigning {
+		*p.willAssign = true
+		p.assignMutex.Unlock()
+		return
+	}
+	*p.isAssigning = true
+	p.assignMutex.Unlock()
+	err := p.periodicAssignmentInternal(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("event-processor: failed to run periodic assignment")
+	}
+	p.assignMutex.Lock()
+	if *p.willAssign {
+		*p.willAssign = false
+		p.assignMutex.Unlock()
+		err = p.periodicAssignmentInternal(ctx)
 		if err != nil {
-			p.daemon.log.Error().Err(err).Msg("event-processor: failed to perform periodic assignment")
+			log.Error().Err(err).Msg("event-processor: failed to run periodic assignment")
 		}
-	}()
+		p.assignMutex.Lock()
+	}
+	*p.isAssigning = false
+	p.assignMutex.Unlock()
+}
+
+func (p DefaultEventProcessor) PeriodicAssignmentAsync(ctx context.Context) {
+	go p.PeriodicAssignmentSync(ctx)
 }
 
 func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {

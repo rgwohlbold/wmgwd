@@ -17,8 +17,6 @@ const EtcdMaxTimeout = 5 * time.Minute
 const EtcdJitter = 50 * time.Millisecond
 const EtcdLeaseTTL = 5
 
-const NumVniUpdateWorkers = 1
-
 const EtcdVniPrefix = "/wmgwd/vni"
 
 const EtcdVniTypeSuffix = "type"

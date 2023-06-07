@@ -31,7 +31,7 @@ func (r *Reporter) Report(ctx context.Context) error {
 			r.daemon.log.Error().Err(err).Msg("reporter: failed to get byte counter")
 			continue
 		}
-		err = r.daemon.db.NewVniUpdate(vni).Revision(state.Revision).Report(newReport).RunOnce(ctx)
+		err = r.daemon.db.NewVniUpdate(vni).Revision(state.Revision).Report(newReport).runOnceInternal(ctx)
 		if err != nil {
 			return err
 		}
