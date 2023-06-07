@@ -24,8 +24,6 @@ const EtcdVniCurrentSuffix = "current"
 const EtcdVniNextSuffix = "next"
 const EtcdNodePrefix = "/wmgwd/node/"
 
-const EtcdLeaderPrefix = "/wmgwd/leader/"
-
 type Database struct {
 	client *v3.Client
 	node   string
