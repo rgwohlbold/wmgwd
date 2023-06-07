@@ -34,12 +34,12 @@ func main() {
 		cancel()
 	}()
 
-	vnis := make([]uint64, 0, 1000)
-	for i := uint64(1); i < 1000; i++ {
+	vnis := make([]uint64, 0, 10000)
+	for i := uint64(1); i < 10000; i++ {
 		vnis = append(vnis, i)
 	}
 	err = NewDaemon(Configuration{
-		ScanInterval:     1 * time.Second,
+		ScanInterval:     30 * time.Second,
 		Node:             os.Args[1],
 		Vnis:             vnis,
 		MigrationTimeout: 1 * time.Second,

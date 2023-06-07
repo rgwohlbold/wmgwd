@@ -209,15 +209,18 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to unregister node, Exit")
 						statusUpdateChan <- Exit
+						continue
 					}
 					nodes, err := d.db.Nodes(ctx)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to get nodes, Exit")
 						statusUpdateChan <- Exit
+						continue
 					}
 					if len(nodes) == 0 {
 						d.log.Info().Msg("no nodes left, exiting")
 						statusUpdateChan <- Exit
+						continue
 					}
 				case Exit:
 					cancel()
@@ -281,18 +284,17 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 		return errors.Wrap(err, "failed to withdraw all on startup")
 	}
 
-	leaderChan := make(chan LeaderState, 1)
 	vniChan := make(chan VniEvent, 1)
 	newNodeChan := make(chan NodeEvent, 1)
 
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
 	runEventIngestor[NodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
-	runEventIngestor[LeaderState](ctx, d.leaderEventIngestor, leaderChan, wg)
+	//runEventIngestor[LeaderState](ctx, d.leaderEventIngestor, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {
-		err := d.eventProcessor.Process(ctx, vniChan, leaderChan, newNodeChan)
+		err := d.eventProcessor.Process(ctx, vniChan, newNodeChan)
 		if err != nil {
 			d.log.Fatal().Err(err).Msg("failed to process events")
 		}

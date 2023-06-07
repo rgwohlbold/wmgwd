@@ -12,12 +12,11 @@ import (
 )
 
 type EventProcessor interface {
-	Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error
+	Process(ctx context.Context, vniChan chan VniEvent, newNodeChan <-chan NodeEvent) error
 }
 
 type DefaultEventProcessor struct {
 	daemon *Daemon
-	leader *LeaderState
 
 	isAssigning *bool
 	willAssign  *bool
@@ -35,11 +34,11 @@ type EventProcessorWrapper struct {
 	daemon         *Daemon
 	cancel         context.CancelFunc
 	eventProcessor EventProcessor
-	afterVniEvent  func(*Daemon, LeaderState, VniEvent) Verdict
-	beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict
+	afterVniEvent  func(*Daemon, VniEvent) Verdict
+	beforeVniEvent func(*Daemon, VniEvent) Verdict
 }
 
-func NoopVniEvent(_ *Daemon, _ LeaderState, _ VniEvent) Verdict {
+func NoopVniEvent(_ *Daemon, _ VniEvent) Verdict {
 	return VerdictContinue
 }
 
@@ -47,7 +46,6 @@ func NewDefaultEventProcessor(daemon *Daemon) *DefaultEventProcessor {
 	isAssigning := false
 	willAssign := false
 	return &DefaultEventProcessor{
-		leader:      &LeaderState{},
 		daemon:      daemon,
 		isAssigning: &isAssigning,
 		willAssign:  &willAssign,
@@ -65,18 +63,15 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 	next := event.State.Next
 	isCurrent := current == p.daemon.Config.Node
 	isNext := next == p.daemon.Config.Node
-	isLeader := p.leader.Node == p.daemon.Config.Node
 
 	// Failure detection
-	if isLeader {
-		// All states except Unassigned and Idle need "Next"
-		if next == "" && state != Idle && state != Unassigned {
-			p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
-		}
-		// All states except Unassigned, FailoverDecided need "Current"
-		if current == "" && state != Unassigned && state != FailoverDecided {
-			p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
-		}
+	// All states except Unassigned and Idle need "Next"
+	if next == "" && state != Idle && state != Unassigned {
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
+	}
+	// All states except Unassigned, FailoverDecided need "Current"
+	if current == "" && state != Unassigned && state != FailoverDecided {
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 	}
 
 	if state == MigrationDecided && isNext {
@@ -170,22 +165,33 @@ func (p DefaultEventProcessor) periodicAssignmentInternal(ctx context.Context) e
 	}
 	assignments := p.daemon.assignmentStrategy.Assign(nodes, state)
 	for _, assignment := range assignments {
-		stateType := MigrationDecided
-		if assignment.Type == Failover {
-			stateType = FailoverDecided
-		}
-		a := assignment
-		go func() {
-			err := p.daemon.db.pool.RunOnce(p.NewVniUpdate(a.Vni).
-				LeaderState(*p.leader).
-				Revision(a.State.Revision).
-				Type(stateType).
-				Current(a.State.Current, NodeLease).
-				Next(a.Next.Name, VniLease{AttachedLeaseType, a.Next.Lease}))
-			if err != nil {
-				p.daemon.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+		if assignment.Next.Name == p.daemon.Config.Node {
+			if assignment.Type == Migration {
+				a := assignment
+				go func() {
+					err := p.NewVniUpdate(a.Vni).
+						Revision(a.State.Revision).
+						Type(MigrationDecided).
+						Next(a.Next.Name, NodeLease).
+						RunOnce()
+					if err != nil {
+						p.daemon.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+					}
+				}()
+			} else if assignment.Type == Failover {
+				a := assignment
+				go func() {
+					err := p.NewVniUpdate(a.Vni).
+						Revision(a.State.Revision).
+						Type(FailoverDecided).
+						Next(a.Next.Name, NodeLease).
+						RunOnce()
+					if err != nil {
+						p.daemon.log.Error().Err(err).Msg("event-processor: failed to assign periodically")
+					}
+				}()
 			}
-		}()
+		}
 	}
 	return nil
 }
@@ -240,62 +246,45 @@ func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {
 	}()
 }
 
-func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error {
+func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEvent, newNodeChan <-chan NodeEvent) error {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
 
-	*p.leader = <-leaderChan
 	for {
 		select {
 		case <-ctx.Done():
 			p.daemon.log.Debug().Msg("event-processor: context done")
 			return nil
 		case <-time.After(p.daemon.Config.ScanInterval):
-			if p.leader.Node == p.daemon.Config.Node {
-				p.PeriodicAssignmentAsync(ctx)
-			}
-			p.ProcessAllVnisAsync(ctx)
-		case newNodeEvent := <-newNodeChan:
-			if p.leader.Node == p.daemon.Config.Node && (newNodeEvent.Type == NodeRemoved || newNodeEvent.Node.Name != p.daemon.Config.Node) {
-				p.PeriodicAssignmentAsync(ctx)
-			}
+			p.PeriodicAssignmentAsync(ctx)
+		case <-newNodeChan:
+			p.PeriodicAssignmentAsync(ctx)
 		case event := <-vniChan:
 			p.ProcessVniEventAsync(event)
-		case newLeaderState := <-leaderChan:
-			*p.leader = newLeaderState
-			if p.leader.Node == p.daemon.Config.Node {
-				p.PeriodicAssignmentAsync(ctx)
-			}
-			p.ProcessAllVnisAsync(ctx)
 		}
 	}
 }
 
-func (p EventProcessorWrapper) Process(ctx context.Context, vniChan chan VniEvent, leaderChan <-chan LeaderState, newNodeChan <-chan NodeEvent) error {
+func (p EventProcessorWrapper) Process(ctx context.Context, vniChan chan VniEvent, newNodeChan <-chan NodeEvent) error {
 	innerCtx, innerCancel := context.WithCancel(context.Background())
 	internalVniChan := make(chan VniEvent, cap(vniChan))
-	internalLeaderChan := make(chan LeaderState, 1)
 	internalNewNodeChan := make(chan NodeEvent, 1)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		leaderState := <-leaderChan
-		internalLeaderChan <- leaderState
 		for {
 			select {
 			case <-innerCtx.Done():
 				return
 			case event := <-vniChan:
-				if p.beforeVniEvent(p.daemon, leaderState, event) == VerdictStop {
+				if p.beforeVniEvent(p.daemon, event) == VerdictStop {
 					p.cancel()
 				}
 				internalVniChan <- event
-				if p.afterVniEvent(p.daemon, leaderState, event) == VerdictStop {
+				if p.afterVniEvent(p.daemon, event) == VerdictStop {
 					p.cancel()
 				}
-			case leaderState = <-leaderChan:
-				internalLeaderChan <- leaderState
 			case newNodeEvent := <-newNodeChan:
 				internalNewNodeChan <- newNodeEvent
 			}
@@ -303,7 +292,7 @@ func (p EventProcessorWrapper) Process(ctx context.Context, vniChan chan VniEven
 	}()
 	var err error
 	go func() {
-		err = p.eventProcessor.Process(ctx, internalVniChan, internalLeaderChan, internalNewNodeChan)
+		err = p.eventProcessor.Process(ctx, internalVniChan, internalNewNodeChan)
 		innerCancel()
 		wg.Done()
 	}()

@@ -6,6 +6,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -58,13 +59,15 @@ type TestDaemon struct {
 	cancel context.CancelFunc
 }
 
-func NewTestDaemon(as AssignmentStrategy, beforeVniEvent func(*Daemon, LeaderState, VniEvent) Verdict, afterVniEvent func(*Daemon, LeaderState, VniEvent) Verdict) TestDaemon {
-	config := Configuration{
-		Node:             RandStringRunes(3),
-		ScanInterval:     1 * time.Second,
-		Vnis:             []uint64{100},
-		MigrationTimeout: 0,
+func NewTestDaemon(config Configuration, as AssignmentStrategy, beforeVniEvent func(*Daemon, VniEvent) Verdict, afterVniEvent func(*Daemon, VniEvent) Verdict) TestDaemon {
+	if config.Node == "" {
+		config.Node = RandStringRunes(3)
 	}
+	config.ScanInterval = 1 * time.Second
+	if config.Vnis == nil {
+		config.Vnis = []uint64{100}
+	}
+	config.MigrationTimeout = 0
 	newAs := as
 	switch as.(type) {
 	case AssignSelf:
@@ -99,13 +102,13 @@ func (d TestDaemon) Run(t *testing.T, wg *sync.WaitGroup) {
 	}()
 }
 
-// TestSingleDaemon tests that the leader assigns itself to unassigned VNIs on startup
+// TestSingleDaemon tests that a single daemon assigns itself to unassigned VNIs on startup
 func TestSingleDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	assertHit := false
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	NewTestDaemon(AssignConsistentHashing{}, NoopVniEvent, func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	NewTestDaemon(Configuration{}, AssignConsistentHashing{}, NoopVniEvent, func(d *Daemon, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
@@ -134,21 +137,23 @@ func TestSingleDaemonFailover(t *testing.T) {
 	}
 }
 
-// TestTwoDaemonFailover tests that when a non-leader crashes in Idle, the leader takes over
+// TestTwoDaemonFailover tests that when a one node crashes in Idle, the leader takes over
 func TestTwoDaemonFailover(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
 	crashed := false
 	recovered := false
+	var originalNode string
 
-	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
+		if !crashed && e.State.Type == Idle && e.State.Current == d.Config.Node {
+			originalNode = d.Config.Node
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			crashed = true
 			return VerdictStop
-		} else if crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node {
+		} else if crashed && e.State.Type == Idle && e.State.Current == d.Config.Node && originalNode != d.Config.Node {
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
 			recovered = true
 			return VerdictStop
@@ -157,36 +162,40 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{}, AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{}, AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !recovered {
 		t.Errorf("recovered = %v; want true", recovered)
 	}
 }
 
-// TestMigration tests that after the leader decides to migrate, the next node will reach Idle
+// TestMigration tests that after a migration the next node will reach Idle
 func TestMigration(t *testing.T) {
 	WipeDatabase(t)
-	leaderAssignedItself := false
+	nodeAssignedItself := false
+	var firstNode string
+	var secondNode string
 	migrationDecided := false
 	idleReached := false
 	leaderStopped := false
 	var lock sync.Mutex
 	var wg sync.WaitGroup
-	afterVniFunc := func(d *Daemon, leader LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node == d.Config.Node {
-			leaderAssignedItself = true
+		if !nodeAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node {
+			firstNode = d.Config.Node
+			nodeAssignedItself = true
 			wg.Done()
 			return VerdictContinue
-		} else if leaderAssignedItself && !migrationDecided && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && leader.Node != d.Config.Node {
-			// Non-leader node was assigned a migration
+		} else if nodeAssignedItself && !migrationDecided && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && firstNode != d.Config.Node {
+			// Other node was assigned a migration
 			migrationDecided = true
+			secondNode = d.Config.Node
 			return VerdictContinue
-		} else if migrationDecided && !idleReached && e.State.Type == Idle && e.State.Current == d.Config.Node && leader.Node != d.Config.Node {
-			// Non-leader node was successfully migrated
+		} else if migrationDecided && !idleReached && e.State.Type == Idle && e.State.Current == d.Config.Node && d.Config.Node == secondNode {
+			// Node was successfully migrated
 			idleReached = true
 			return VerdictStop
 		} else if idleReached {
@@ -196,11 +205,16 @@ func TestMigration(t *testing.T) {
 		}
 		return VerdictContinue
 	}
+	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64)}
 	wg.Add(1)
-	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, NoopVniEvent, afterVniFunc)
+	daemon1.daemon.uids = []uint64{math.MaxUint64}
+	daemon1.Run(t, &wg)
 	wg.Wait()
 	wg.Add(2)
-	NewTestDaemon(AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, NoopVniEvent, afterVniFunc)
+	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
+	daemon2.Run(t, &wg)
 	wg.Wait()
 	if !leaderStopped {
 		t.Errorf("leaderStopped = %v; want true", leaderStopped)
@@ -211,31 +225,35 @@ func TestMigration(t *testing.T) {
 func TestCrashFailoverDecided(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
+	var firstNode string
+	var secondNode string
 	firstIdleCrashed := false
 	secondFailoverCrashed := false
 	thirdReachesIdle := false
 
-	beforeVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	beforeVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
 
-		if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
-			// Second non-leader process crashes in FailoverDecided
+		if firstIdleCrashed && !secondFailoverCrashed && e.State.Type == FailoverDecided && e.State.Next == d.Config.Node && d.Config.Node != firstNode {
+			// Crash in FailoverDecided
 			secondFailoverCrashed = true
+			secondNode = d.Config.Node
 			return VerdictStop
 		}
 		return VerdictContinue
 	}
 
-	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !firstIdleCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
-			// First non-leader idle process crashes
+		if !firstIdleCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node {
+			// First idle process crashes
 			firstIdleCrashed = true
+			firstNode = d.Config.Node
 			return VerdictStop
-		} else if secondFailoverCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
-			// Third process (leader) is assigned and reaches idle
+		} else if secondFailoverCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && d.Config.Node != firstNode && d.Config.Node != secondNode {
+			// Third process reaches idle
 			thirdReachesIdle = true
 			return VerdictStop
 		}
@@ -243,9 +261,16 @@ func TestCrashFailoverDecided(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(3)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon1.daemon.uids = []uint64{math.MaxUint64}
+	daemon1.Run(t, &wg)
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
+	daemon2.Run(t, &wg)
+	daemon3 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon3.daemon.uids = []uint64{math.MaxUint64 - 2}
+	daemon3.Run(t, &wg)
 	wg.Wait()
 	if !thirdReachesIdle {
 		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
@@ -264,31 +289,31 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 	WipeDatabase(t)
 	var lock sync.Mutex
 	var wg sync.WaitGroup
-	leaderAssignedItself := false
-	firstMigrationCrashed := false
+	var firstNode string
+	var crashingNode string
 	secondReachesIdle := false
-	beforeVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	beforeVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if leaderAssignedItself && !firstMigrationCrashed &&
+		if firstNode != "" && crashingNode == "" &&
 			e.State.Type == stateType &&
 			(crashType == CrashNext && e.State.Next == d.Config.Node || crashType == CrashCurrent && e.State.Current == d.Config.Node) {
-			log.Info().Msg("first migration crashed")
-			firstMigrationCrashed = true
+			crashingNode = d.Config.Node
+			log.Info().Str("node", d.Config.Node).Msg("crashing")
 			return VerdictStop
 		}
 		return VerdictContinue
 	}
-	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
-			log.Info().Msg("leader assigned itself")
-			leaderAssignedItself = true
+		if firstNode == "" && e.State.Type == Idle && e.State.Current == d.Config.Node {
+			log.Info().Str("node", d.Config.Node).Msg("reached idle")
+			firstNode = d.Config.Node
 			wg.Done()
 			return VerdictContinue
-		} else if firstMigrationCrashed && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node != d.Config.Node {
-			log.Info().Msg("second reaches idle")
+		} else if crashingNode != "" && e.State.Type == Idle && e.State.Current == d.Config.Node && d.Config.Node != crashingNode {
+			log.Info().Str("node", d.Config.Node).Msg("reached idle")
 			secondReachesIdle = true
 			return VerdictStop
 		} else if secondReachesIdle {
@@ -296,12 +321,20 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 		}
 		return VerdictContinue
 	}
+	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
 	wg.Add(1)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon1.daemon.uids = []uint64{math.MaxUint64}
+	daemon1.Run(t, &wg)
+
 	wg.Wait()
-	wg.Add(3)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(AssignOther{}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
+	daemon2.Run(t, &wg)
+
+	wg.Add(2)
 	wg.Wait()
 	if !secondReachesIdle {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesIdle)
@@ -340,16 +373,16 @@ func TestDrainOnShutdown(t *testing.T) {
 	WipeDatabase(t)
 	var lock sync.Mutex
 	var wg sync.WaitGroup
-	leaderAssignedItself := false
+	firstNode := ""
 	secondReachesMigrate := false
-	afterVniFunc := func(d *Daemon, s LeaderState, e VniEvent) Verdict {
+	afterVniFunc := func(d *Daemon, e VniEvent) Verdict {
 		lock.Lock()
 		defer lock.Unlock()
-		if !leaderAssignedItself && e.State.Type == Idle && e.State.Current == d.Config.Node && s.Node == d.Config.Node {
-			log.Info().Str("node", d.Config.Node).Msg("leader assigned itself")
-			leaderAssignedItself = true
+		if firstNode == "" && e.State.Type == Idle && e.State.Current == d.Config.Node {
+			log.Info().Str("node", d.Config.Node).Msg("first node assigned itself")
+			firstNode = d.Config.Node
 			return VerdictStop
-		} else if leaderAssignedItself && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && s.Node != d.Config.Node {
+		} else if firstNode != "" && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && firstNode != d.Config.Node {
 			log.Info().Str("node", d.Config.Node).Msg("second reaches MigrationDecided")
 			secondReachesMigrate = true
 			return VerdictStop
@@ -357,12 +390,8 @@ func TestDrainOnShutdown(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(2)
-	testDaemon1 := NewTestDaemon(AssignSelf{}, NoopVniEvent, afterVniFunc)
-	testDaemon1.daemon.Config.DrainOnShutdown = true
-	testDaemon2 := NewTestDaemon(AssignSelf{}, NoopVniEvent, afterVniFunc)
-	testDaemon2.daemon.Config.DrainOnShutdown = true
-	testDaemon1.Run(t, &wg)
-	testDaemon2.Run(t, &wg)
+	NewTestDaemon(Configuration{DrainOnShutdown: true}, AssignSelf{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{DrainOnShutdown: true}, AssignSelf{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !secondReachesMigrate {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesMigrate)

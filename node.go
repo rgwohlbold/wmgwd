@@ -45,7 +45,7 @@ func (i NodeIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent) {
 						continue
 					}
 					name := strings.TrimPrefix(string(ev.Kv.Key), EtcdNodePrefix)
-					log.Info().Str("name", string(ev.Kv.Key)).Msg("node-watcher: node added")
+					//log.Info().Str("name", string(ev.Kv.Key)).Msg("node-watcher: node added")
 					nodeChan <- NodeEvent{
 						Type: NodeAdded,
 						Node: Node{
@@ -54,7 +54,6 @@ func (i NodeIngestor) Ingest(ctx context.Context, nodeChan chan<- NodeEvent) {
 							Uids:  uids,
 						}}
 				} else if ev.Type == v3.EventTypeDelete {
-					log.Info().Str("name", string(ev.Kv.Key)).Msg("node-watcher: node deleted")
 					nodeChan <- NodeEvent{
 						Type: NodeRemoved,
 					}
