@@ -22,7 +22,6 @@ type Configuration struct {
 	MigrationTimeout time.Duration
 	ScanInterval     time.Duration
 	DrainOnShutdown  bool
-	Report           bool
 }
 
 type Daemon struct {
@@ -298,14 +297,6 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 		}
 		wg.Done()
 	}()
-
-	if d.Config.Report {
-		wg.Add(1)
-		go func() {
-			NewReporter(d).Start(ctx)
-			wg.Done()
-		}()
-	}
 
 	<-drainCtx.Done()
 	if !d.Config.DrainOnShutdown {

@@ -44,7 +44,6 @@ func main() {
 		Vnis:             vnis,
 		MigrationTimeout: 1 * time.Second,
 		DrainOnShutdown:  true,
-		Report:           false,
 	}, NewMockNetworkStrategy(), AssignConsistentHashing{}).Run(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to run daemon")

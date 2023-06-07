@@ -22,7 +22,6 @@ const EtcdVniPrefix = "/wmgwd/vni"
 const EtcdVniTypeSuffix = "type"
 const EtcdVniCurrentSuffix = "current"
 const EtcdVniNextSuffix = "next"
-const EtcdVniReportSuffix = "report"
 const EtcdNodePrefix = "/wmgwd/node/"
 
 const EtcdLeaderPrefix = "/wmgwd/leader/"
@@ -216,8 +215,6 @@ func (db *Database) GetFullState(ctx context.Context, config Configuration, revi
 			states[keyVni].Current = string(kv.Value)
 		} else if suffix == EtcdVniNextSuffix {
 			states[keyVni].Next = string(kv.Value)
-		} else if suffix == EtcdVniReportSuffix {
-			// ignore
 		} else {
 			return nil, errors.New("invalid suffix")
 		}
@@ -255,11 +252,6 @@ func (db *Database) GetState(vni uint64, revision int64) (VniState, error) {
 			state.Current = string(kv.Value)
 		} else if suffix == EtcdVniNextSuffix {
 			state.Next = string(kv.Value)
-		} else if suffix == EtcdVniReportSuffix {
-			state.Report, err = strconv.ParseUint(string(kv.Value), 10, 64)
-			if err != nil {
-				return VniState{}, errors.New("invalid report")
-			}
 		} else {
 			return VniState{}, errors.New("invalid suffix")
 		}

@@ -10,7 +10,6 @@ type VniState struct {
 	Current  string
 	Next     string
 	Revision int64
-	Report   uint64
 }
 
 type VniEvent struct {
