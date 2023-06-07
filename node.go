@@ -16,7 +16,7 @@ type NewNodeEvent struct {
 	Node Node
 }
 
-func (i NewNodeEventIngestor) Ingest(ctx context.Context, d *Daemon, newNodeChan chan<- NewNodeEvent) {
+func (i NewNodeEventIngestor) Ingest(ctx context.Context, newNodeChan chan<- NewNodeEvent) {
 	watchChan := <-i.WatchChanChan
 	for {
 		select {

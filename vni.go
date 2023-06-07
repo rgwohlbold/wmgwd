@@ -19,11 +19,20 @@ type VniEvent struct {
 
 type VniEventIngestor struct {
 	WatchChanChan <-chan v3.WatchChan
+	Daemon        *Daemon
 }
 
 const InvalidVni = ^uint64(0)
 
-func (i VniEventIngestor) Ingest(ctx context.Context, d *Daemon, ch chan<- VniEvent) {
+func NewVniEventIngestor(d *Daemon, watchChanChan <-chan v3.WatchChan) VniEventIngestor {
+	return VniEventIngestor{
+		WatchChanChan: watchChanChan,
+		Daemon:        d,
+	}
+}
+
+func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent) {
+	d := i.Daemon
 	watchChan := <-i.WatchChanChan
 	for {
 		select {

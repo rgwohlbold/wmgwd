@@ -12,7 +12,9 @@ type LeaderState struct {
 	Key  string
 }
 
-type LeaderEventIngestor struct{}
+type LeaderEventIngestor struct {
+	Daemon *Daemon
+}
 
 const LeaderTickerInterval = 1 * time.Second
 
@@ -31,7 +33,12 @@ func reliably(ctx context.Context, log zerolog.Logger, fn func() error) {
 	}
 }
 
-func (_ LeaderEventIngestor) Ingest(ctx context.Context, d *Daemon, leaderChan chan<- LeaderState) {
+func NewLeaderEventIngestor(daemon *Daemon) LeaderEventIngestor {
+	return LeaderEventIngestor{Daemon: daemon}
+}
+
+func (i LeaderEventIngestor) Ingest(ctx context.Context, leaderChan chan<- LeaderState) {
+	d := i.Daemon
 	leaderChan <- LeaderState{Node: "", Key: ""}
 
 	// strip slash since it is added by the concurrency library

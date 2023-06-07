@@ -39,13 +39,13 @@ type Daemon struct {
 }
 
 type EventIngestor[E any] interface {
-	Ingest(ctx context.Context, daemon *Daemon, eventChan chan<- E)
+	Ingest(ctx context.Context, eventChan chan<- E)
 }
 
-func runEventIngestor[E any](ctx context.Context, daemon *Daemon, ingestor EventIngestor[E], eventChan chan<- E, wg *sync.WaitGroup) {
+func runEventIngestor[E any](ctx context.Context, ingestor EventIngestor[E], eventChan chan<- E, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
-		ingestor.Ingest(ctx, daemon, eventChan)
+		ingestor.Ingest(ctx, eventChan)
 		wg.Done()
 	}()
 }
@@ -59,13 +59,14 @@ func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) 
 		Config:               config,
 		assignmentStrategy:   as,
 		networkStrategy:      ns,
-		vniEventIngestor:     VniEventIngestor{},
 		newNodeEventIngestor: NewNodeEventIngestor{},
 		leaderEventIngestor:  LeaderEventIngestor{},
 		uids:                 uids,
 		log:                  log.With().Str("node", config.Node).Logger(),
 	}
 	daemon.eventProcessor = NewDefaultEventProcessor(daemon)
+	daemon.vniEventIngestor = NewVniEventIngestor(daemon, nil) // will be set later when NewDatabase is called
+	daemon.leaderEventIngestor = NewLeaderEventIngestor(daemon)
 	return daemon
 }
 
@@ -285,9 +286,9 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	newNodeChan := make(chan NewNodeEvent, 1)
 
 	wg := new(sync.WaitGroup)
-	runEventIngestor[VniEvent](ctx, d, d.vniEventIngestor, vniChan, wg)
-	runEventIngestor[NewNodeEvent](ctx, d, d.newNodeEventIngestor, newNodeChan, wg)
-	runEventIngestor[LeaderState](ctx, d, d.leaderEventIngestor, leaderChan, wg)
+	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
+	runEventIngestor[NewNodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
+	runEventIngestor[LeaderState](ctx, d.leaderEventIngestor, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {
