@@ -89,11 +89,6 @@ func (u *VniUpdate) Revision(revision int64) *VniUpdate {
 	return u
 }
 
-func (u *VniUpdate) LeaderState(leaderState LeaderState) *VniUpdate {
-	u.conditions = append(u.conditions, v3.Compare(v3.Value(leaderState.Key), "=", leaderState.Node))
-	return u
-}
-
 func (u *VniUpdate) runOnceInternal(ctx context.Context) error {
 	if u.revision == -1 {
 		panic(errors.New("revision not set"))

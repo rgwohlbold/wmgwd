@@ -59,7 +59,7 @@ type TestDaemon struct {
 	cancel context.CancelFunc
 }
 
-func NewTestDaemon(config Configuration, as AssignmentStrategy, beforeVniEvent func(*Daemon, VniEvent) Verdict, afterVniEvent func(*Daemon, VniEvent) Verdict) TestDaemon {
+func NewTestDaemon(config Configuration, beforeVniEvent func(*Daemon, VniEvent) Verdict, afterVniEvent func(*Daemon, VniEvent) Verdict) TestDaemon {
 	if config.Node == "" {
 		config.Node = RandStringRunes(3)
 	}
@@ -68,15 +68,8 @@ func NewTestDaemon(config Configuration, as AssignmentStrategy, beforeVniEvent f
 		config.Vnis = []uint64{100}
 	}
 	config.MigrationTimeout = 0
-	newAs := as
-	switch as.(type) {
-	case AssignSelf:
-		newAs = AssignSelf{Config: &config}
-	case AssignOther:
-		newAs = AssignOther{Config: &config}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	daemon := NewDaemon(config, NewMockNetworkStrategy(), newAs)
+	daemon := NewDaemon(config, NewMockNetworkStrategy())
 	daemon.eventProcessor = EventProcessorWrapper{
 		daemon:         daemon,
 		cancel:         cancel,
@@ -108,7 +101,7 @@ func TestSingleDaemonFailover(t *testing.T) {
 	assertHit := false
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	NewTestDaemon(Configuration{}, AssignConsistentHashing{}, NoopVniEvent, func(d *Daemon, e VniEvent) Verdict {
+	NewTestDaemon(Configuration{}, NoopVniEvent, func(d *Daemon, e VniEvent) Verdict {
 		if e.State.Type == Idle {
 			assertHit = true
 			AssertNetworkStrategy(t, d.networkStrategy.(*MockNetworkStrategy), 100, true, true, true, 1)
@@ -162,8 +155,13 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	NewTestDaemon(Configuration{}, AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(Configuration{}, AssignOther{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	daemon1 := NewTestDaemon(Configuration{}, NoopVniEvent, afterVniFunc)
+	daemon1.daemon.uids = []uint64{1}
+	daemon1.Run(t, &wg)
+	daemon2 := NewTestDaemon(Configuration{}, NoopVniEvent, afterVniFunc)
+	daemon2.daemon.uids = []uint64{2}
+	daemon2.Run(t, &wg)
+
 	wg.Wait()
 	if !recovered {
 		t.Errorf("recovered = %v; want true", recovered)
@@ -207,12 +205,12 @@ func TestMigration(t *testing.T) {
 	}
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64)}
 	wg.Add(1)
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, NoopVniEvent, afterVniFunc)
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, NoopVniEvent, afterVniFunc)
 	daemon1.daemon.uids = []uint64{math.MaxUint64}
 	daemon1.Run(t, &wg)
 	wg.Wait()
 	wg.Add(2)
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, NoopVniEvent, afterVniFunc)
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, NoopVniEvent, afterVniFunc)
 	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
 	daemon2.Run(t, &wg)
 	wg.Wait()
@@ -262,13 +260,13 @@ func TestCrashFailoverDecided(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
 	daemon1.daemon.uids = []uint64{math.MaxUint64}
 	daemon1.Run(t, &wg)
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
 	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
 	daemon2.Run(t, &wg)
-	daemon3 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon3 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
 	daemon3.daemon.uids = []uint64{math.MaxUint64 - 2}
 	daemon3.Run(t, &wg)
 	wg.Wait()
@@ -324,13 +322,13 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
 	wg.Add(1)
 
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
 	daemon1.daemon.uids = []uint64{math.MaxUint64}
 	daemon1.Run(t, &wg)
 
 	wg.Wait()
 
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, AssignConsistentHashing{}, beforeVniFunc, afterVniFunc)
+	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
 	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
 	daemon2.Run(t, &wg)
 
@@ -379,7 +377,7 @@ func TestDrainOnShutdown(t *testing.T) {
 		lock.Lock()
 		defer lock.Unlock()
 		if firstNode == "" && e.State.Type == Idle && e.State.Current == d.Config.Node {
-			log.Info().Str("node", d.Config.Node).Msg("first node assigned itself")
+			log.Info().Str("node", d.Config.Node).Msg("node was assigned")
 			firstNode = d.Config.Node
 			return VerdictStop
 		} else if firstNode != "" && e.State.Type == MigrationDecided && e.State.Next == d.Config.Node && firstNode != d.Config.Node {
@@ -390,8 +388,12 @@ func TestDrainOnShutdown(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(2)
-	NewTestDaemon(Configuration{DrainOnShutdown: true}, AssignSelf{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
-	NewTestDaemon(Configuration{DrainOnShutdown: true}, AssignSelf{}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	daemon1 := NewTestDaemon(Configuration{DrainOnShutdown: true}, NoopVniEvent, afterVniFunc)
+	daemon1.daemon.uids = []uint64{math.MaxUint64}
+	daemon1.Run(t, &wg)
+	daemon2 := NewTestDaemon(Configuration{DrainOnShutdown: true}, NoopVniEvent, afterVniFunc)
+	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
+	daemon2.Run(t, &wg)
 	wg.Wait()
 	if !secondReachesMigrate {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesMigrate)

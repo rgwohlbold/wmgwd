@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"github.com/emirpasic/gods/maps/treemap"
+	"github.com/emirpasic/gods/utils"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
@@ -36,6 +39,20 @@ type EventProcessorWrapper struct {
 	eventProcessor EventProcessor
 	afterVniEvent  func(*Daemon, VniEvent) Verdict
 	beforeVniEvent func(*Daemon, VniEvent) Verdict
+}
+
+type AssignmentType int
+
+const (
+	Migration AssignmentType = iota
+	Failover
+)
+
+type Assignment struct {
+	Vni   uint64
+	State VniState
+	Type  AssignmentType
+	Next  Node
 }
 
 func NoopVniEvent(_ *Daemon, _ VniEvent) Verdict {
@@ -153,6 +170,43 @@ func (p DefaultEventProcessor) ProcessVniEventAsync(event VniEvent) {
 	}()
 }
 
+func murmur64(key uint64) uint64 {
+	key ^= key >> 33
+	key *= 0xff51afd7ed558ccd
+	key ^= key >> 33
+	key *= 0xc4ceb9fe1a85ec53
+	key ^= key >> 33
+	return key
+}
+
+func Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
+	if len(nodes) == 0 {
+		return nil
+	}
+	hashNode := treemap.NewWith(utils.UInt64Comparator)
+	for _, node := range nodes {
+		for _, uid := range node.Uids {
+			hashNode.Put(murmur64(uid), node)
+		}
+	}
+	assignments := make([]Assignment, 0)
+	for vni, vniState := range state {
+		if vniState.Type != Idle && vniState.Type != Unassigned {
+			continue
+		}
+		_, node := hashNode.Ceiling(murmur64(vni))
+		if node == nil {
+			_, node = hashNode.Min()
+		}
+		if vniState.Type == Unassigned {
+			assignments = append(assignments, Assignment{vni, *vniState, Failover, node.(Node)})
+		} else if vniState.Type == Idle && node.(Node).Name != vniState.Current {
+			assignments = append(assignments, Assignment{vni, *vniState, Migration, node.(Node)})
+		}
+	}
+	return assignments
+}
+
 func (p DefaultEventProcessor) periodicAssignmentInternal(ctx context.Context) error {
 	state, err := p.daemon.db.GetFullState(ctx, p.daemon.Config, -1)
 	if err != nil {
@@ -163,7 +217,7 @@ func (p DefaultEventProcessor) periodicAssignmentInternal(ctx context.Context) e
 	if err != nil {
 		return errors.Wrap(err, "could not get nodes")
 	}
-	assignments := p.daemon.assignmentStrategy.Assign(nodes, state)
+	assignments := Assign(nodes, state)
 	for _, assignment := range assignments {
 		if assignment.Next.Name == p.daemon.Config.Node {
 			if assignment.Type == Migration {
@@ -225,6 +279,21 @@ func (p DefaultEventProcessor) PeriodicAssignmentSync(ctx context.Context) {
 
 func (p DefaultEventProcessor) PeriodicAssignmentAsync(ctx context.Context) {
 	go p.PeriodicAssignmentSync(ctx)
+}
+
+func reliably(ctx context.Context, log zerolog.Logger, fn func() error) {
+	for {
+		err := fn()
+		if err == nil {
+			return
+		}
+		log.Error().Err(err).Msg("reliably: failed")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
+	}
 }
 
 func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {

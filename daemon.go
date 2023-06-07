@@ -26,11 +26,9 @@ type Configuration struct {
 
 type Daemon struct {
 	Config               Configuration
-	assignmentStrategy   AssignmentStrategy
 	networkStrategy      NetworkStrategy
 	vniEventIngestor     VniEventIngestor
 	newNodeEventIngestor NodeIngestor
-	leaderEventIngestor  LeaderEventIngestor
 	eventProcessor       EventProcessor
 	db                   *Database
 	periodicArpChan      chan bool
@@ -50,23 +48,20 @@ func runEventIngestor[E any](ctx context.Context, ingestor EventIngestor[E], eve
 	}()
 }
 
-func NewDaemon(config Configuration, ns NetworkStrategy, as AssignmentStrategy) *Daemon {
+func NewDaemon(config Configuration, ns NetworkStrategy) *Daemon {
 	uids := make([]uint64, NumConsistentHashingUids)
 	for i := range uids {
 		uids[i] = rand.Uint64()
 	}
 	daemon := &Daemon{
 		Config:               config,
-		assignmentStrategy:   as,
 		networkStrategy:      ns,
 		newNodeEventIngestor: NodeIngestor{},
-		leaderEventIngestor:  LeaderEventIngestor{},
 		uids:                 uids,
 		log:                  log.With().Str("node", config.Node).Logger(),
 	}
 	daemon.eventProcessor = NewDefaultEventProcessor(daemon)
 	daemon.vniEventIngestor = NewVniEventIngestor(daemon, nil) // will be set later when NewDatabase is called
-	daemon.leaderEventIngestor = NewLeaderEventIngestor(daemon)
 	return daemon
 }
 
@@ -290,7 +285,6 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
 	runEventIngestor[NodeEvent](ctx, d.newNodeEventIngestor, newNodeChan, wg)
-	//runEventIngestor[LeaderState](ctx, d.leaderEventIngestor, leaderChan, wg)
 
 	wg.Add(1)
 	go func() {

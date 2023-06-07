@@ -57,7 +57,6 @@ func (i VniEventIngestor) Ingest(ctx context.Context, ch chan<- VniEvent) {
 				vnis.Add(parsedVni)
 			}
 			if vnis.Size() == 0 {
-				d.log.Error().Msg("vni-watcher: got event for no vnis")
 				continue
 			}
 			for _, vni := range vnis.Values() {
