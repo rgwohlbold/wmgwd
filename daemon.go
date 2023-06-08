@@ -6,7 +6,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	v3 "go.etcd.io/etcd/client/v3"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -17,7 +16,8 @@ const PeriodicArpInterval = 10 * time.Second
 const NumConsistentHashingUids = 100
 
 type Configuration struct {
-	Node             string
+	Name             string
+	Uids             []uint64
 	Vnis             []uint64
 	MigrationTimeout time.Duration
 	ScanInterval     time.Duration
@@ -32,7 +32,6 @@ type Daemon struct {
 	eventProcessor    EventProcessor
 	db                *Database
 	periodicArpChan   chan bool
-	uids              []uint64
 	log               zerolog.Logger
 }
 
@@ -51,15 +50,10 @@ func runEventIngestor[E any](ctx context.Context, ingestor EventIngestor[E], eve
 }
 
 func NewDaemon(config Configuration, ns NetworkStrategy) *Daemon {
-	uids := make([]uint64, NumConsistentHashingUids)
-	for i := range uids {
-		uids[i] = rand.Uint64()
-	}
 	daemon := &Daemon{
 		Config:          config,
 		networkStrategy: ns,
-		uids:            uids,
-		log:             log.With().Str("node", config.Node).Logger(),
+		log:             log.With().Str("node", config.Name).Logger(),
 	}
 	daemon.eventProcessor = NewDefaultEventProcessor(daemon)
 	daemon.vniEventIngestor = NewVniEventIngestor(daemon)
@@ -124,7 +118,7 @@ func (d *Daemon) InitPeriodicArp(ctx context.Context) {
 						continue
 					}
 					for vni, vniState := range state {
-						if vniState.Type == Idle && vniState.Current == d.Config.Node {
+						if vniState.Type == Idle && vniState.Current == d.Config.Name {
 							err = d.networkStrategy.SendGratuitousArp(vni)
 							if err != nil {
 								d.log.Error().Err(err).Msg("periodic arp: failed to send gratuitous arp")
@@ -162,11 +156,13 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 			respChan, cancel, err = d.db.CreateLeaseAndKeepalive(ctx)
 			if err == nil {
 				break
+			} else {
+				d.log.Error().Err(err).Msg("failed to create lease and keepalive")
 			}
 		}
 		d.db.pool.Start(ctx)
 		d.StartPeriodicArp()
-		err = d.db.Register(d.Config.Node, d.uids)
+		err = d.db.Register(d.Config.Name, d.Config.Uids)
 		if err != nil {
 			d.log.Error().Err(err).Msg("failed to register node")
 		}
@@ -175,7 +171,6 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		ticker := time.NewTicker(DatabaseOpenInterval)
 		status := DatabaseConnected
 		statusUpdateChan := make(chan DaemonState, 1)
-		statusUpdateChan <- status
 
 		drainChan := drainCtx.Done()
 		exitChan := ctx.Done()
@@ -189,16 +184,14 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				statusUpdateChan <- Drain
 				drainChan = nil
 			case status = <-statusUpdateChan:
-				switch status {
-				case DatabaseConnected:
+				if status == DatabaseConnected {
 					d.StartPeriodicArp()
-					err = d.db.Register(d.Config.Node, d.uids)
+					err = d.db.Register(d.Config.Name, d.Config.Uids)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
 						statusUpdateChan <- DatabaseDisconnected
 					}
-				case DatabaseDisconnected:
-					d.log.Info().Msg("database keepalive channel closed, withdrawing all and reopening database")
+				} else if status == DatabaseDisconnected {
 					d.StopPeriodicArp()
 					respChan = nil
 					cancel()
@@ -206,9 +199,9 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
 					}
-				case Drain:
+				} else if status == Drain {
 					d.log.Info().Msg("drain requested, unregistering node")
-					err = d.db.Unregister(d.Config.Node)
+					err = d.db.Unregister(d.Config.Name)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to unregister node, Exit")
 						statusUpdateChan <- Exit
@@ -225,7 +218,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 						statusUpdateChan <- Exit
 						continue
 					}
-				case Exit:
+				} else if status == Exit {
 					cancel()
 					d.StopPeriodicArp()
 					ticker.Stop()
@@ -234,6 +227,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				}
 			case _, ok := <-respChan:
 				if !ok {
+					d.log.Info().Msg("database keepalive channel closed")
 					statusUpdateChan <- DatabaseDisconnected
 				}
 			case <-ticker.C:
@@ -246,13 +240,13 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					}
 					found := false
 					for _, node := range nodes {
-						if node.Name == d.Config.Node {
+						if node.Name == d.Config.Name {
 							found = true
 							break
 						}
 					}
 					if !found {
-						err = d.db.Register(d.Config.Node, d.uids)
+						err = d.db.Register(d.Config.Name, d.Config.Uids)
 						if err != nil {
 							d.log.Error().Err(err).Msg("failed to register node")
 						}
@@ -260,6 +254,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 				} else if status == DatabaseDisconnected {
 					newRespChan, newCancel, err := d.db.CreateLeaseAndKeepalive(ctx)
 					if err != nil {
+						log.Error().Err(err).Msg("failed to create lease and keepalive")
 						continue
 					}
 					respChan = newRespChan
@@ -273,7 +268,7 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					}
 					found := false
 					for _, vniState := range dbState {
-						if vniState.Current == d.Config.Node {
+						if vniState.Current == d.Config.Name {
 							found = true
 							break
 						}

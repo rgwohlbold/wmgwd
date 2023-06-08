@@ -67,7 +67,7 @@ func NewDatabase(config Configuration) (*Database, error) {
 		return nil, err
 	}
 
-	return &Database{client: client, node: config.Node, pool: NewVniUpdateWorkerPool(NumVniUpdateWorkers)}, nil
+	return &Database{client: client, node: config.Name, pool: NewVniUpdateWorkerPool(NumVniUpdateWorkers)}, nil
 }
 
 func (db *Database) CreateLeaseAndKeepalive(ctx context.Context) (<-chan *v3.LeaseKeepAliveResponse, context.CancelFunc, error) {

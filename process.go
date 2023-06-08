@@ -74,24 +74,22 @@ func (p DefaultEventProcessor) NewVniUpdate(vni uint64) *VniUpdate {
 	return p.daemon.db.NewVniUpdate(vni)
 }
 
-func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
+func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event VniEvent) error {
 	state := event.State.Type
 	current := event.State.Current
 	next := event.State.Next
-	isCurrent := current == p.daemon.Config.Node
-	isNext := next == p.daemon.Config.Node
+	isCurrent := current == p.daemon.Config.Name
+	isNext := next == p.daemon.Config.Name
 
 	// Failure detection
 	// All states except Unassigned and Idle need "Next"
-	if next == "" && state != Idle && state != Unassigned {
-		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
-	}
-	// All states except Unassigned, FailoverDecided need "Current"
-	if current == "" && state != Unassigned && state != FailoverDecided {
+	if next == "" && state != Idle && state != Unassigned || current == "" && state != Unassigned && state != FailoverDecided {
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Unassigned).Current("", NoLease).Next("", NoLease).RunWithRetry()
 	}
 
-	if state == MigrationDecided && isNext {
+	if state == Unassigned {
+		p.PeriodicAssignmentAsync(ctx)
+	} else if state == MigrationDecided && isNext {
 		err := p.daemon.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise evpn")
@@ -160,9 +158,9 @@ func (p DefaultEventProcessor) ProcessVniEventSync(event VniEvent) error {
 	return nil
 }
 
-func (p DefaultEventProcessor) ProcessVniEventAsync(event VniEvent) {
+func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
 	go func() {
-		err := p.ProcessVniEventSync(event)
+		err := p.ProcessVniEventSync(ctx, event)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to process vni event")
 		}
@@ -185,7 +183,7 @@ func Assign(nodes []Node, state map[uint64]*VniState) []Assignment {
 	hashNode := treemap.NewWith(utils.UInt64Comparator)
 	for _, node := range nodes {
 		for _, uid := range node.Uids {
-			hashNode.Put(murmur64(uid), node)
+			hashNode.Put(uid, node)
 		}
 	}
 	assignments := make([]Assignment, 0)
@@ -218,7 +216,7 @@ func (p DefaultEventProcessor) periodicAssignmentInternal(ctx context.Context) e
 	}
 	assignments := Assign(nodes, state)
 	for _, assignment := range assignments {
-		if assignment.Next.Name == p.daemon.Config.Node {
+		if assignment.Next.Name == p.daemon.Config.Name {
 			if assignment.Type == Migration {
 				a := assignment
 				go func() {
@@ -309,7 +307,7 @@ func (p DefaultEventProcessor) ProcessAllVnisAsync(ctx context.Context) {
 		default:
 		}
 		for vni, state := range states {
-			p.ProcessVniEventAsync(VniEvent{Vni: vni, State: *state})
+			p.ProcessVniEventAsync(ctx, VniEvent{Vni: vni, State: *state})
 		}
 	}()
 }
@@ -318,17 +316,20 @@ func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEven
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGUSR1)
 
+	p.ProcessAllVnisAsync(ctx)
+	ticker := time.NewTicker(p.daemon.Config.ScanInterval)
 	for {
 		select {
 		case <-ctx.Done():
 			p.daemon.log.Debug().Msg("event-processor: context done")
 			return nil
-		case <-time.After(p.daemon.Config.ScanInterval):
+		case <-ticker.C:
+			p.ProcessAllVnisAsync(ctx)
 			p.PeriodicAssignmentAsync(ctx)
 		case <-newNodeChan:
 			p.PeriodicAssignmentAsync(ctx)
 		case event := <-vniChan:
-			p.ProcessVniEventAsync(event)
+			p.ProcessVniEventAsync(ctx, event)
 		}
 	}
 }

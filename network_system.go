@@ -68,27 +68,22 @@ func (s *SystemNetworkStrategy) vtysh(commands []FrrCommand) error {
 	clear := false
 	for _, command := range commands {
 		var bytes []byte
-		switch command.Type {
-		case FrrOspfAdvertise:
+		if command.Type == FrrOspfAdvertise {
 			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
 				"no ospf cost\n" +
 				"exit\n")
-			break
-		case FrrOspfWithdraw:
+		} else if command.Type == FrrOspfWithdraw {
 			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
 				"ospf cost 65535\n" +
 				"exit\n")
-			break
-		case FrrEvpnAdvertise:
+		} else if command.Type == FrrEvpnAdvertise {
 			bytes = []byte("route-map filter-vni permit " + strconv.FormatUint(command.Vni+RouteMapPriorityOffset, 10) + "\n" +
 				"match evpn vni " + strconv.FormatUint(command.Vni, 10) + "\n" +
 				"exit\n")
 			clear = true
-			break
-		case FrrEvpnWithdraw:
+		} else if command.Type == FrrEvpnWithdraw {
 			bytes = []byte("no route-map filter-vni permit " + strconv.FormatUint(command.Vni+RouteMapPriorityOffset, 10) + "\n")
 			clear = true
-			break
 		}
 		_, err = stdinPipe.Write(bytes)
 		if err != nil {
@@ -141,7 +136,7 @@ func (s *SystemNetworkStrategy) Loop(ctx context.Context) {
 				if num == 0 {
 					goto start
 				}
-				log.Info().Int("commands", len(commands)).Msg("processing commands")
+				log.Debug().Int("commands", len(commands)).Msg("processing commands")
 				err := s.vtysh(commands)
 				for _, command := range commands {
 					command.ResponseChan <- err
