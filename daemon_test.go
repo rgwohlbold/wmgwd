@@ -63,6 +63,9 @@ func NewTestDaemon(config Configuration, beforeVniEvent func(*Daemon, VniEvent) 
 	if config.Name == "" {
 		config.Name = RandStringRunes(3)
 	}
+	if config.Uids == nil {
+		config.Uids = []uint64{math.MaxUint64}
+	}
 	config.ScanInterval = 1 * time.Second
 	if config.Vnis == nil {
 		config.Vnis = []uint64{100}
@@ -155,13 +158,8 @@ func TestTwoDaemonFailover(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	daemon1 := NewTestDaemon(Configuration{}, NoopVniEvent, afterVniFunc)
-	daemon1.daemon.uids = []uint64{1}
-	daemon1.Run(t, &wg)
-	daemon2 := NewTestDaemon(Configuration{}, NoopVniEvent, afterVniFunc)
-	daemon2.daemon.uids = []uint64{2}
-	daemon2.Run(t, &wg)
-
+	NewTestDaemon(Configuration{Uids: []uint64{1}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{Uids: []uint64{2}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !recovered {
 		t.Errorf("recovered = %v; want true", recovered)
@@ -205,14 +203,10 @@ func TestMigration(t *testing.T) {
 	}
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64)}
 	wg.Add(1)
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, NoopVniEvent, afterVniFunc)
-	daemon1.daemon.uids = []uint64{math.MaxUint64}
-	daemon1.Run(t, &wg)
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	wg.Add(2)
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, NoopVniEvent, afterVniFunc)
-	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
-	daemon2.Run(t, &wg)
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64 - 1}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !leaderStopped {
 		t.Errorf("leaderStopped = %v; want true", leaderStopped)
@@ -260,15 +254,9 @@ func TestCrashFailoverDecided(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
-	daemon1.daemon.uids = []uint64{math.MaxUint64}
-	daemon1.Run(t, &wg)
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
-	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
-	daemon2.Run(t, &wg)
-	daemon3 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
-	daemon3.daemon.uids = []uint64{math.MaxUint64 - 2}
-	daemon3.Run(t, &wg)
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64}}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64 - 1}}, beforeVniFunc, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64 - 2}}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !thirdReachesIdle {
 		t.Errorf("idleOnLeader = %v; want true", thirdReachesIdle)
@@ -321,17 +309,9 @@ func SubTestCrashMigrationDecided(t *testing.T, stateType VniStateType, crashTyp
 	}
 	vnis := []uint64{FindVniThatMapsBetween(1, math.MaxUint64-1)}
 	wg.Add(1)
-
-	daemon1 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
-	daemon1.daemon.uids = []uint64{math.MaxUint64}
-	daemon1.Run(t, &wg)
-
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64}}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Wait()
-
-	daemon2 := NewTestDaemon(Configuration{Vnis: vnis}, beforeVniFunc, afterVniFunc)
-	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
-	daemon2.Run(t, &wg)
-
+	NewTestDaemon(Configuration{Vnis: vnis, Uids: []uint64{math.MaxUint64 - 1}}, beforeVniFunc, afterVniFunc).Run(t, &wg)
 	wg.Add(2)
 	wg.Wait()
 	if !secondReachesIdle {
@@ -388,12 +368,8 @@ func TestDrainOnShutdown(t *testing.T) {
 		return VerdictContinue
 	}
 	wg.Add(2)
-	daemon1 := NewTestDaemon(Configuration{DrainOnShutdown: true}, NoopVniEvent, afterVniFunc)
-	daemon1.daemon.uids = []uint64{math.MaxUint64}
-	daemon1.Run(t, &wg)
-	daemon2 := NewTestDaemon(Configuration{DrainOnShutdown: true}, NoopVniEvent, afterVniFunc)
-	daemon2.daemon.uids = []uint64{math.MaxUint64 - 1}
-	daemon2.Run(t, &wg)
+	NewTestDaemon(Configuration{DrainOnShutdown: true, Uids: []uint64{math.MaxUint64}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
+	NewTestDaemon(Configuration{DrainOnShutdown: true, Uids: []uint64{math.MaxUint64 - 1}}, NoopVniEvent, afterVniFunc).Run(t, &wg)
 	wg.Wait()
 	if !secondReachesMigrate {
 		t.Errorf("secondReachesIdle = %v; want true", secondReachesMigrate)
