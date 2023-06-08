@@ -140,16 +140,18 @@ const (
 	Exit
 )
 
-func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelFunc, drainCtx context.Context) error {
+func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelFunc, drainCtx context.Context, wg *sync.WaitGroup) error {
 	var err error
 	d.db, err = NewDatabase(d.Config)
 	if err != nil {
 		return errors.Wrap(err, "failed to create database")
 	}
 
-	var wg sync.WaitGroup
+	var innerWg sync.WaitGroup
+	innerWg.Add(1)
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		var respChan <-chan *v3.LeaseKeepAliveResponse
 		var cancel context.CancelFunc
 		for {
@@ -166,69 +168,83 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 		if err != nil {
 			d.log.Error().Err(err).Msg("failed to register node")
 		}
-		wg.Done()
+		innerWg.Done()
 
 		ticker := time.NewTicker(DatabaseOpenInterval)
 		status := DatabaseConnected
-		statusUpdateChan := make(chan DaemonState, 1)
 
 		drainChan := drainCtx.Done()
 		exitChan := ctx.Done()
 
-		for {
-			select {
-			case <-exitChan:
-				statusUpdateChan <- Exit
-				exitChan = nil
-			case <-drainChan:
-				statusUpdateChan <- Drain
-				drainChan = nil
-			case status = <-statusUpdateChan:
-				if status == DatabaseConnected {
-					d.StartPeriodicArp()
-					err = d.db.Register(d.Config.Name, d.Config.Uids)
-					if err != nil {
-						d.log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
-						statusUpdateChan <- DatabaseDisconnected
-					}
-				} else if status == DatabaseDisconnected {
-					d.StopPeriodicArp()
-					respChan = nil
-					cancel()
-					err = d.WithdrawAll()
-					if err != nil {
-						d.log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
-					}
-				} else if status == Drain {
-					d.log.Info().Msg("drain requested, unregistering node")
-					err = d.db.Unregister(d.Config.Name)
-					if err != nil {
-						d.log.Error().Err(err).Msg("failed to unregister node, Exit")
-						statusUpdateChan <- Exit
-						continue
-					}
-					nodes, err := d.db.Nodes(ctx)
-					if err != nil {
-						d.log.Error().Err(err).Msg("failed to get nodes, Exit")
-						statusUpdateChan <- Exit
-						continue
-					}
-					if len(nodes) == 0 {
-						d.log.Info().Msg("no nodes left, exiting")
-						statusUpdateChan <- Exit
-						continue
-					}
-				} else if status == Exit {
-					cancel()
-					d.StopPeriodicArp()
-					ticker.Stop()
-					cancelDaemon()
+		done := false
+
+		var transition func(newStatus DaemonState)
+		t := func(newStatus DaemonState) {
+			if newStatus == status {
+				return
+			}
+			status = newStatus
+			if status == DatabaseConnected {
+				d.StartPeriodicArp()
+				err = d.db.Register(d.Config.Name, d.Config.Uids)
+				if err != nil {
+					d.log.Error().Err(err).Msg("failed to register node, DatabaseDisconnected")
+					transition(DatabaseDisconnected)
 					return
 				}
+			} else if status == DatabaseDisconnected {
+				d.StopPeriodicArp()
+				respChan = nil
+				cancel()
+				err = d.WithdrawAll()
+				if err != nil {
+					d.log.Error().Err(err).Msg("failed to withdraw all on keepalive channel close")
+				}
+			} else if status == Drain {
+				d.log.Info().Msg("drain requested, unregistering node")
+				err = d.db.Unregister(d.Config.Name)
+				if err != nil {
+					d.log.Error().Err(err).Msg("failed to unregister node, Exit")
+					transition(Exit)
+					return
+				}
+				nodes, err := d.db.Nodes(ctx)
+				if err != nil {
+					d.log.Error().Err(err).Msg("failed to get nodes, Exit")
+					transition(Exit)
+					return
+				}
+				if len(nodes) == 0 {
+					d.log.Info().Msg("no nodes left, exiting")
+					transition(Exit)
+					return
+				}
+			} else if status == Exit {
+				err = d.db.Unregister(d.Config.Name)
+				if err != nil {
+					d.log.Error().Err(err).Msg("failed to unregister node on exit")
+				}
+				cancel()
+				d.StopPeriodicArp()
+				ticker.Stop()
+				cancelDaemon()
+				done = true
+			}
+		}
+		transition = t
+
+		for !done {
+			select {
+			case <-exitChan:
+				transition(Exit)
+				exitChan = nil
+			case <-drainChan:
+				transition(Drain)
+				drainChan = nil
 			case _, ok := <-respChan:
 				if !ok {
 					d.log.Info().Msg("database keepalive channel closed")
-					statusUpdateChan <- DatabaseDisconnected
+					transition(DatabaseDisconnected)
 				}
 			case <-ticker.C:
 				if status == DatabaseConnected {
@@ -259,12 +275,12 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					}
 					respChan = newRespChan
 					cancel = newCancel
-					statusUpdateChan <- DatabaseConnected
+					transition(DatabaseConnected)
 				} else if status == Drain {
 					dbState, err := d.db.GetFullState(ctx, d.Config, -1)
 					if err != nil {
 						d.log.Error().Err(err).Msg("failed to get full state, exiting")
-						statusUpdateChan <- Exit
+						transition(Exit)
 					}
 					found := false
 					for _, vniState := range dbState {
@@ -275,13 +291,12 @@ func (d *Daemon) SetupDatabase(ctx context.Context, cancelDaemon context.CancelF
 					}
 					if !found {
 						d.log.Info().Msg("drain complete, exiting")
-						statusUpdateChan <- Exit
+						transition(Exit)
 					}
 				}
 			}
 		}
 	}()
-	wg.Wait()
 	return nil
 }
 
@@ -295,9 +310,9 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	}
 
 	d.InitPeriodicArp(ctx)
-	var err error
+	wg := &sync.WaitGroup{}
 
-	err = d.SetupDatabase(ctx, cancel, drainCtx)
+	err := d.SetupDatabase(ctx, cancel, drainCtx, wg)
 	if err != nil {
 		return errors.Wrap(err, "failed to setup database")
 	}
@@ -310,7 +325,6 @@ func (d *Daemon) Run(drainCtx context.Context) error {
 	vniChan := make(chan VniEvent, 1)
 	newNodeChan := make(chan NodeEvent, 1)
 
-	wg := new(sync.WaitGroup)
 	runEventIngestor[VniEvent](ctx, d.vniEventIngestor, vniChan, wg)
 	runEventIngestor[NodeEvent](ctx, d.nodeEventIngestor, newNodeChan, wg)
 
