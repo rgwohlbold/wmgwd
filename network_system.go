@@ -21,7 +21,6 @@ const RouteMapPriorityOffset = 10
 
 const (
 	FrrOspfAdvertise FrrCommandType = iota
-	FrrOspfWithdraw
 	FrrEvpnAdvertise
 	FrrEvpnWithdraw
 )
@@ -30,6 +29,7 @@ type FrrCommand struct {
 	Type         FrrCommandType
 	Vni          uint64
 	ResponseChan chan error
+	Cost         OspfCost
 }
 
 type SystemNetworkStrategy struct {
@@ -70,11 +70,7 @@ func (s *SystemNetworkStrategy) vtysh(commands []FrrCommand) error {
 		var bytes []byte
 		if command.Type == FrrOspfAdvertise {
 			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
-				"no ospf cost\n" +
-				"exit\n")
-		} else if command.Type == FrrOspfWithdraw {
-			bytes = []byte("interface " + s.bridgeName(command.Vni) + "\n" +
-				"ospf cost 65535\n" +
+				"ospf cost " + strconv.FormatUint(uint64(command.Cost), 10) + "\n" +
 				"exit\n")
 		} else if command.Type == FrrEvpnAdvertise {
 			bytes = []byte("route-map filter-vni permit " + strconv.FormatUint(command.Vni+RouteMapPriorityOffset, 10) + "\n" +
@@ -173,19 +169,12 @@ func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 	})
 }
 
-func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64) error {
+func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64, cost OspfCost) error {
 	log.Debug().Uint64("vni", vni).Msg("advertising ospf")
 	return s.WaitForCommand(FrrCommand{
 		Type: FrrOspfAdvertise,
 		Vni:  vni,
-	})
-}
-
-func (s *SystemNetworkStrategy) WithdrawOspf(vni uint64) error {
-	log.Debug().Uint64("vni", vni).Msg("withdrawing ospf")
-	return s.WaitForCommand(FrrCommand{
-		Type: FrrOspfWithdraw,
-		Vni:  vni,
+		Cost: cost,
 	})
 }
 

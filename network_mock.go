@@ -22,10 +22,14 @@ func NewMockNetworkStrategy() *MockNetworkStrategy {
 	}
 }
 
-func (s MockNetworkStrategy) AdvertiseOspf(vni uint64) error {
+func (s MockNetworkStrategy) AdvertiseOspf(vni uint64, cost OspfCost) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.ospfAdvertised[vni] = true
+	if cost == OspfWithdrawCost {
+		s.ospfAdvertised[vni] = false
+	} else {
+		s.ospfAdvertised[vni] = true
+	}
 	return nil
 }
 

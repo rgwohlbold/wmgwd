@@ -95,14 +95,14 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 			return errors.Wrap(err, "could not advertise evpn")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
-		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni)
+		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni, OspfIdleCost)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise ospf")
 		}
 		time.Sleep(p.daemon.Config.MigrationTimeout)
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationOspfAdvertised).RunWithRetry()
 	} else if state == MigrationOspfAdvertised && isCurrent {
-		err := p.daemon.networkStrategy.WithdrawOspf(event.Vni)
+		err := p.daemon.networkStrategy.AdvertiseOspf(event.Vni, OspfWithdrawCost)
 		if err != nil {
 			return errors.Wrap(err, "could not withdraw ospf")
 		}
@@ -140,7 +140,7 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 		if err != nil {
 			return errors.Wrap(err, "could not advertise evpn")
 		}
-		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni)
+		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni, OspfFailoverCost)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise ospf")
 		}
@@ -152,7 +152,8 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 		if err != nil {
 			log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
 		}
-		time.Sleep(p.daemon.Config.MigrationTimeout)
+		time.Sleep(p.daemon.Config.FailoverTimeout)
+		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni, OspfIdleCost)
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 	}
 	return nil

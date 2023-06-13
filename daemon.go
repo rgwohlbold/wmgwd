@@ -20,6 +20,7 @@ type Configuration struct {
 	Uids             []uint64
 	Vnis             []uint64
 	MigrationTimeout time.Duration
+	FailoverTimeout  time.Duration
 	ScanInterval     time.Duration
 	DrainOnShutdown  bool
 }
@@ -74,7 +75,7 @@ func (d *Daemon) WithdrawAll() error {
 		}(vni)
 		go func(vni uint64) {
 			defer wg.Done()
-			err := d.networkStrategy.WithdrawOspf(vni)
+			err := d.networkStrategy.AdvertiseOspf(vni, OspfWithdrawCost)
 			if err != nil {
 				log.Error().Err(err).Uint64("vni", vni).Msg("failed to withdraw ospf")
 			}
