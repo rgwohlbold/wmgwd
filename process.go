@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const FailoverArpInterval = 1 * time.Second
+
 type EventProcessor interface {
 	Process(ctx context.Context, vniChan chan VniEvent, newNodeChan <-chan NodeEvent) error
 }
@@ -152,7 +154,19 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 		if err != nil {
 			log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
 		}
-		time.Sleep(p.daemon.Config.FailoverTimeout)
+		ch := time.After(p.daemon.Config.FailoverTimeout)
+		done := false
+		for !done {
+			select {
+			case <-ch:
+				done = true
+			case <-time.After(FailoverArpInterval):
+				err = p.daemon.networkStrategy.SendGratuitousArp(event.Vni)
+				if err != nil {
+					log.Error().Err(err).Uint64("vni", event.Vni).Msg("could not send gratuitous arp")
+				}
+			}
+		}
 		err = p.daemon.networkStrategy.AdvertiseOspf(event.Vni, OspfIdleCost)
 		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(Idle).Current(event.State.Next, NodeLease).Next("", NoLease).RunWithRetry()
 	}
