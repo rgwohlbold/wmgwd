@@ -61,7 +61,7 @@ func ParseConfiguration() (Configuration, NetworkStrategy) {
 		Uids:             uids,
 		Vnis:             vnis,
 		MigrationTimeout: 10 * time.Second,
-		FailoverTimeout:  30 * time.Second,
+		FailoverTimeout:  60 * time.Second,
 		ScanInterval:     30 * time.Second,
 		DrainOnShutdown:  true,
 	}, ns
