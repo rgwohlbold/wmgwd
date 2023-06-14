@@ -170,7 +170,7 @@ func (s *SystemNetworkStrategy) WithdrawEvpn(vni uint64) error {
 }
 
 func (s *SystemNetworkStrategy) AdvertiseOspf(vni uint64, cost OspfCost) error {
-	log.Debug().Uint64("vni", vni).Msg("advertising ospf")
+	log.Debug().Uint64("vni", vni).Uint16("cost", uint16(cost)).Msg("advertising ospf")
 	return s.WaitForCommand(FrrCommand{
 		Type: FrrOspfAdvertise,
 		Vni:  vni,

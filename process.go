@@ -91,7 +91,9 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 
 	if state == Unassigned {
 		p.PeriodicAssignmentAsync(ctx)
-	} else if state == MigrationDecided && isNext {
+	} else if state == MigrationDecided && isCurrent {
+		p.NewVniUpdate(event.Vni).Revision(event.State.Revision).Type(MigrationConfirmed).RunWithRetry()
+	} else if state == MigrationConfirmed && isNext {
 		err := p.daemon.networkStrategy.AdvertiseEvpn(event.Vni)
 		if err != nil {
 			return errors.Wrap(err, "could not advertise evpn")

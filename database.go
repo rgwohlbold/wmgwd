@@ -37,6 +37,7 @@ const (
 	Unassigned VniStateType = iota
 	Idle
 	MigrationDecided
+	MigrationConfirmed
 	MigrationOspfAdvertised
 	MigrationOspfWithdrawn
 	MigrationArpEnabled
@@ -161,6 +162,8 @@ func stateTypeToString(state VniStateType) string {
 		return "idle"
 	case MigrationDecided:
 		return "migration-decided"
+	case MigrationConfirmed:
+		return "migration-confirmed"
 	case MigrationOspfAdvertised:
 		return "migration-ospf-advertised"
 	case MigrationOspfWithdrawn:
