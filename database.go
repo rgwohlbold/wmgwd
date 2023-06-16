@@ -15,7 +15,7 @@ import (
 const EtcdTimeout = 5 * time.Second
 const EtcdMaxTimeout = 5 * time.Minute
 const EtcdJitter = 50 * time.Millisecond
-const EtcdLeaseTTL = 5
+const EtcdLeaseTTL = 1
 
 const EtcdVniPrefix = "/wmgwd/vni"
 
