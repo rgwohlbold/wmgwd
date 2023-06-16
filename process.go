@@ -180,15 +180,14 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 }
 
 func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
-	go func() {
-		p.vniProcessingLock.Lock()
-		if (*p.vniProcessingMap)[event.Vni] >= event.State.Revision {
-			p.vniProcessingLock.Unlock()
-			return
-		}
-		(*p.vniProcessingMap)[event.Vni] = event.State.Revision
+	p.vniProcessingLock.Lock()
+	if (*p.vniProcessingMap)[event.Vni] >= event.State.Revision {
 		p.vniProcessingLock.Unlock()
-
+		return
+	}
+	(*p.vniProcessingMap)[event.Vni] = event.State.Revision
+	p.vniProcessingLock.Unlock()
+	go func() {
 		err := p.ProcessVniEventSync(ctx, event)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to process vni event")
