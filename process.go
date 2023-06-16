@@ -23,9 +23,11 @@ type EventProcessor interface {
 type DefaultEventProcessor struct {
 	daemon *Daemon
 
-	isAssigning *bool
-	willAssign  *bool
-	assignMutex *sync.Mutex
+	isAssigning       *bool
+	willAssign        *bool
+	assignMutex       *sync.Mutex
+	vniProcessingMap  *map[uint64]int64
+	vniProcessingLock *sync.Mutex
 }
 
 type Verdict int
@@ -65,10 +67,12 @@ func NewDefaultEventProcessor(daemon *Daemon) *DefaultEventProcessor {
 	isAssigning := false
 	willAssign := false
 	return &DefaultEventProcessor{
-		daemon:      daemon,
-		isAssigning: &isAssigning,
-		willAssign:  &willAssign,
-		assignMutex: &sync.Mutex{},
+		daemon:            daemon,
+		isAssigning:       &isAssigning,
+		willAssign:        &willAssign,
+		assignMutex:       &sync.Mutex{},
+		vniProcessingLock: &sync.Mutex{},
+		vniProcessingMap:  &map[uint64]int64{},
 	}
 }
 
@@ -177,6 +181,14 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 
 func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
 	go func() {
+		p.vniProcessingLock.Lock()
+		if (*p.vniProcessingMap)[event.Vni] >= event.State.Revision {
+			p.vniProcessingLock.Unlock()
+			return
+		}
+		(*p.vniProcessingMap)[event.Vni] = event.State.Revision
+		p.vniProcessingLock.Unlock()
+
 		err := p.ProcessVniEventSync(ctx, event)
 		if err != nil {
 			p.daemon.log.Error().Err(err).Msg("event-processor: failed to process vni event")
