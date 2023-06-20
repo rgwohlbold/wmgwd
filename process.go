@@ -352,7 +352,6 @@ func (p DefaultEventProcessor) Process(ctx context.Context, vniChan chan VniEven
 			p.daemon.log.Debug().Msg("event-processor: context done")
 			return nil
 		case <-ticker.C:
-			p.ProcessAllVnisAsync(ctx)
 			p.PeriodicAssignmentAsync(ctx)
 		case <-newNodeChan:
 			p.PeriodicAssignmentAsync(ctx)
