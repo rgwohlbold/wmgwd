@@ -3,7 +3,6 @@ package main
 type OspfCost uint16
 
 const (
-	OspfFailoverCost OspfCost = 1
 	OspfIdleCost     OspfCost = 100
 	OspfWithdrawCost OspfCost = 65535
 )
