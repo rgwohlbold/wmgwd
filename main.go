@@ -21,6 +21,7 @@ func ParseConfiguration() (Configuration, NetworkStrategy) {
 	mockNetwork := flag.Bool("mock", false, "use mock network strategy")
 	uidString := flag.String("uids", "", "comma-separated list of uids")
 	debug := flag.Bool("debug", false, "enable debug logging")
+	etcdEndpoint := flag.String("etcd", "http://localhost:2379", "etcd endpoint")
 	flag.Parse()
 	if *name == "" {
 		log.Fatal().Msg("name is required")
@@ -58,6 +59,7 @@ func ParseConfiguration() (Configuration, NetworkStrategy) {
 	}
 	return Configuration{
 		Name:             *name,
+		EtcdEndpoint:     *etcdEndpoint,
 		Uids:             uids,
 		Vnis:             vnis,
 		MigrationTimeout: 10 * time.Second,

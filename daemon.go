@@ -17,6 +17,7 @@ const NumConsistentHashingUids = 100
 
 type Configuration struct {
 	Name             string
+	EtcdEndpoint     string
 	Uids             []uint64
 	Vnis             []uint64
 	MigrationTimeout time.Duration

@@ -61,8 +61,12 @@ func createLease(ctx context.Context, client *v3.Client) (*v3.LeaseGrantResponse
 }
 
 func NewDatabase(config Configuration) (*Database, error) {
+	endpoint := config.EtcdEndpoint
+	if endpoint == "" {
+		endpoint = "http://localhost:2379"
+	}
 	client, err := v3.New(v3.Config{
-		Endpoints: []string{"http://localhost:2379"},
+		Endpoints: []string{endpoint},
 	})
 	if err != nil {
 		return nil, err
