@@ -179,13 +179,13 @@ func (p DefaultEventProcessor) ProcessVniEventSync(ctx context.Context, event Vn
 }
 
 func (p DefaultEventProcessor) ProcessVniEventAsync(ctx context.Context, event VniEvent) {
-	p.vniProcessingLock.Lock()
-	if (*p.vniProcessingMap)[event.Vni] >= event.State.Revision {
-		p.vniProcessingLock.Unlock()
-		return
-	}
-	(*p.vniProcessingMap)[event.Vni] = event.State.Revision
-	p.vniProcessingLock.Unlock()
+	//p.vniProcessingLock.Lock()
+	//if (*p.vniProcessingMap)[event.Vni] >= event.State.Revision {
+	//	p.vniProcessingLock.Unlock()
+	//	return
+	//}
+	//(*p.vniProcessingMap)[event.Vni] = event.State.Revision
+	//p.vniProcessingLock.Unlock()
 	go func() {
 		err := p.ProcessVniEventSync(ctx, event)
 		if err != nil {
