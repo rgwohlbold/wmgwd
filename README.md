@@ -16,6 +16,13 @@ The daemon uses the database for three things:
 
 To assign overlay networks to gateways, `wmgwd` uses [consistent hashing](https://en.wikipedia.org/wiki/Consistent_hashing) to randomly assign overlay networks to physical gateways.
 
+## Host System Interaction
+
+`wmgwd` enables and disables ARP on selected interfaces via the [`/proc` filesystem](https://docs.kernel.org/filesystems/proc.html). 
+The daemon also reconfigures FRR via its command-line interface `vtysh`.
+Advertising and withdrawing BGP EVPN routes is done by configuring route-maps at runtime.
+Advertising and withdrawing OSPF routes is done by setting link costs to 100 or 65535. 
+
 ## Build
 
 ```bash
@@ -37,3 +44,51 @@ This creates an executable `wmgwd`.
 | uids   |                       | Comma-separated list of UIDs used for consistent hashing (default: random) |
 | debug  | false                 | Enable debug logging                                                       |
 | etcd   | http://localhost:2379 | Etcd endpoint                                                              |
+
+## Network Configuration
+
+For each VNI `i`, `wmgwd` assumes two interfaces: `vxlan$i` and `br$i` where the `vxlan$i` has `br$i` as its master.
+`br$i` is assigned the IP addresses that all devices in that overlay network use as their default gateway.
+
+`wmgwd` assumes that FRR is run on the gateway and announces routes with BGP EVPN into WiMoVE and with OSPF into the rest of the network.
+The daemon restricts which BGP EVPN routes are advertised by FRR using route maps.
+
+There, a route map called `filter-vni` that permits all BGP EVPN routes that are not of type 2 (MAC/IP advertisement route) or type 5 (IP prefix route) is required.
+This is an example configuration file of FRR that works with `wmgwd`:
+
+```
+ip forwarding
+ip nht resolve-via-default
+ip6 nht resolve-via-default
+router bgp 65000
+  bgp router-id 10.0.1.11
+  no bgp default ipv4-unicast
+  neighbor fabric peer-group
+  neighbor fabric remote-as 65000
+  neighbor fabric capability extended-nexthop
+  neighbor fabric ebgp-multihop 5
+  neighbor fabric timers 1 3
+  neighbor 10.0.1.17 peer-group fabric
+  address-family l2vpn evpn
+   neighbor fabric activate
+   neighbor fabric route-map filter-vni out
+   advertise-all-vni
+   advertise-svi-ip
+  exit-address-family
+  !
+!
+router ospf
+ ospf router-id 1.1.1.1
+ network 0.0.0.0/0 area 0.0.0.0
+!
+route-map filter-vni permit 1
+ match evpn route-type 2
+ on-match goto 4
+!
+route-map filter-vni permit 2
+ match evpn route-type 5
+ on-match goto 4
+!
+route-map filter-vni permit 3
+!
+```
